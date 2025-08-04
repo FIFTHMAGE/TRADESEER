@@ -20,7 +20,7 @@ A Telegram bot that tracks smart wallets and provides alerts before they trade o
 
 1. **Clone the repository**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/FIFTHMAGE/TRADESEER.git
    cd TradeSeer
    ```
 
@@ -68,4 +68,4 @@ The bot continuously monitors tracked wallet addresses by:
 
 ## License
 
-MIT License 
+MIT License
