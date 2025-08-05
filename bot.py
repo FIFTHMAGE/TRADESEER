@@ -134,12 +134,15 @@ def get_wallet_insights(wallet_address):
     
     # Get recent activity
     recent_tx = transactions[0]
-    last_activity = datetime.fromtimestamp(int(recent_tx["timeStamp"]))
-    days_ago = (datetime.now() - last_activity).days
+    last_activity = datetime.utcfromtimestamp(int(recent_tx["timeStamp"]))
+    days_ago = (datetime.utcnow() - last_activity).days
+    
+    # Format the timestamp for better readability
+    last_activity_str = last_activity.strftime('%Y-%m-%d %H:%M UTC')
     
     insights = f"""
 🔍 <b>Wallet Insights</b>
-📊 <b>Recent Activity:</b> {days_ago} days ago
+📊 <b>Last Activity:</b> {days_ago} days ago ({last_activity_str})
 💰 <b>Volume (Last 20 TXs):</b> {total_volume:.4f} ETH
 ✅ <b>Successful:</b> {successful_txs}
 ❌ <b>Failed:</b> {failed_txs}
@@ -159,10 +162,10 @@ def check_wallet_activity(wallet_address):
         return False, None
     
     transactions = data["result"][:5]  # Check last 5 transactions
-    cutoff_time = datetime.now() - timedelta(minutes=30)
+    cutoff_time = datetime.utcnow() - timedelta(minutes=30)
     
     for tx in transactions:
-        tx_time = datetime.fromtimestamp(int(tx["timeStamp"]))
+        tx_time = datetime.utcfromtimestamp(int(tx["timeStamp"]))
         if tx_time > cutoff_time:
             value = int(tx["value"]) / 10**18
             if value > 0:  # Only notify for transactions with value
