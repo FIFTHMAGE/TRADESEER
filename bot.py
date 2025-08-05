@@ -607,6 +607,28 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     bot_instance = app.bot
     
+    # Clear any existing webhooks to prevent conflicts
+    try:
+        bot_instance.delete_webhook(drop_pending_updates=True)
+        print("🧹 Cleared existing webhooks")
+    except Exception as e:
+        print(f"⚠️ Could not clear webhooks: {e}")
+    
+    # Add error handler for conflicts
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if isinstance(context.error, Conflict):
+            print(f"⚠️ Bot conflict detected: {context.error}")
+            print("💡 This usually means another bot instance is running")
+            print("🔄 Restarting in 30 seconds...")
+            await asyncio.sleep(30)
+            # Restart the bot
+            context.application.stop()
+            context.application.start()
+        else:
+            print(f"❌ Error: {context.error}")
+    
+    app.add_error_handler(error_handler)
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("list", list_command))
@@ -617,17 +639,20 @@ def main():
     print("✅ Bot is ready! Monitoring wallets for ETH inflows...")
     print("📱 Send /start to your bot to begin!")
     try:
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down TradeSeer Bot...")
         running = False
     except Conflict as e:
         print(f"⚠️ Bot conflict detected: {e}")
-        print("💡 Make sure only one instance of the bot is running")
-        running = False
+        print("💡 Attempting to restart in 10 seconds...")
+        time.sleep(10)
+        main()  # Restart the bot
     except Exception as e:
         print(f"❌ Error running bot: {e}")
-        running = False
+        print("🔄 Restarting in 10 seconds...")
+        time.sleep(10)
+        main()  # Restart the bot
 
 # To run:
 if __name__ == "__main__":
