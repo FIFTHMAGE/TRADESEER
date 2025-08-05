@@ -76,12 +76,22 @@ class TelegramBot:
 # Initialize bot
 bot = TelegramBot(TELEGRAM_BOT_TOKEN)
 
-def get_transactions_from_chain(wallet_address, chain):
-    """Get transactions from a specific chain"""
+def is_wallet_address(text):
+    """Check if text contains a valid wallet address"""
+    import re
+    # Ethereum address pattern: 0x followed by 40 hex characters
+    pattern = r'\b0x[a-fA-F0-9]{40}\b'
+    match = re.search(pattern, text)
+    return match.group() if match else None
+
+def get_token_transfers(wallet_address, chain, days=1):
+    """Get token transfers for a wallet in the last X days"""
+    from datetime import datetime, timedelta
+    
     if chain == "ethereum":
-        url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+        url = f"https://api.etherscan.io/api?module=account&action=tokentx&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     elif chain == "base":
-        url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+        url = f"https://api.basescan.org/api?module=account&action=tokentx&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     else:
         return []
     
@@ -89,6 +99,55 @@ def get_transactions_from_chain(wallet_address, chain):
         response = requests.get(url)
         data = response.json()
         
+        if data["status"] == "1" and "result" in data:
+            transfers = data["result"]
+            
+            # Filter by time period
+            cutoff_time = datetime.utcnow() - timedelta(days=days)
+            recent_transfers = []
+            
+            for transfer in transfers:
+                tx_time = datetime.utcfromtimestamp(int(transfer["timeStamp"]))
+                if tx_time > cutoff_time:
+                    transfer["chain"] = chain
+                    recent_transfers.append(transfer)
+            
+            return recent_transfers
+        return []
+    except Exception as e:
+        print(f"Error fetching {chain} token transfers: {e}")
+        return []
+
+def analyze_token_purchases(wallet_address, days=1):
+    """Analyze what tokens a wallet bought in the last X days"""
+    # Get token transfers from both chains
+    eth_transfers = get_token_transfers(wallet_address, "ethereum", days)
+    base_transfers = get_token_transfers(wallet_address, "base", days)
+    
+    all_transfers = eth_transfers + base_transfers
+    all_transfers.sort(key=lambda x: int(x["timeStamp"]), reverse=True)
+    
+    # Filter for incoming transfers (purchases)
+    purchases = []
+    for transfer in all_transfers:
+        if transfer["to"].lower() == wallet_address.lower():
+            purchases.append(transfer)
+    
+    return purchases
+
+def get_transactions_from_chain(wallet_address, chain):
+    """Get transactions from a specific chain"""
+    if chain == "ethereum":
+        url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    elif chain == "base":
+    url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    else:
+        return []
+    
+    try:
+    response = requests.get(url)
+    data = response.json()
+    
         if data["status"] == "1" and "result" in data:
             transactions = data["result"]
             # Add chain info to each transaction
@@ -221,7 +280,7 @@ def monitor_wallets():
     while running:
         try:
             for user_id, wallets in user_wallets.items():
-                for wallet in wallets:
+    for wallet in wallets:
                     has_activity, tx_data = check_wallet_activity(wallet)
                     
                     if has_activity and tx_data:
@@ -253,18 +312,28 @@ def handle_start(chat_id):
     message = """
 🔮 <b>Welcome to TradeSeer!</b>
 
-🎯 Track smart wallets and get real-time notifications
+🎯 Track smart wallets across Ethereum & Base
 📊 Analyze wallet performance with AI insights
-⚡ Get alerts for high-value transactions
+💰 See what tokens wallets are buying
+⚡ Get real-time transaction alerts
+
+<b>Quick Start:</b>
+Just paste any wallet address and I'll help you!
 
 <b>Commands:</b>
-/track [wallet] - Track a wallet
-/list - Show tracked wallets  
-/untrack [wallet] - Stop tracking
-/score [wallet] - Get wallet score
-/insights [wallet] - Detailed analysis
+/track [wallet] - Track a wallet for notifications
+/list - Show all tracked wallets  
+/untrack [wallet] - Stop tracking a wallet
+/score [wallet] - Get smart wallet score (0-100)
+/insights [wallet] - Detailed wallet analysis
+/purchases [wallet] [today/week/month] - Token purchases
 
-Ready to start tracking? 🚀
+<b>Natural Language:</b>
+🔹 "Track this wallet: 0x123..."
+🔹 "What did 0x123... buy today?"
+🔹 "0x123... purchases this week"
+
+Ready to track some smart money? 🚀
 """
     bot.send_message(chat_id, message)
 
@@ -334,7 +403,7 @@ def handle_untrack(chat_id, wallet_address):
     # Find and remove wallet
     for wallet in user_wallets[chat_id]:
         if wallet.lower() == wallet_address.lower():
-            user_wallets[chat_id].remove(wallet)
+        user_wallets[chat_id].remove(wallet)
             bot.send_message(chat_id, f"✅ Stopped tracking wallet: <code>{wallet}</code>")
             return
     
@@ -394,6 +463,116 @@ def handle_insights(chat_id, wallet_address):
     insights = get_wallet_insights(wallet_address)
     bot.send_message(chat_id, insights)
 
+def handle_purchases(chat_id, text):
+    """Handle purchase analysis commands"""
+    # Extract wallet address and time period
+    wallet_address = is_wallet_address(text)
+    
+    if not wallet_address:
+        bot.send_message(chat_id, "❌ Please provide a wallet address: /purchases 0x... [today/week/month]")
+        return
+    
+    # Determine time period
+    days = 1  # default to today
+    if "week" in text.lower():
+        days = 7
+    elif "month" in text.lower():
+        days = 30
+    elif "today" in text.lower():
+        days = 1
+    
+    # Get token purchases
+    purchases = analyze_token_purchases(wallet_address, days)
+    
+    if not purchases:
+        period = "today" if days == 1 else "this week" if days == 7 else "this month"
+        bot.send_message(chat_id, f"📭 No token purchases found for this wallet {period}")
+        return
+
+    # Format response
+    period = "Today" if days == 1 else "This Week" if days == 7 else "This Month"
+    response = f"💰 <b>Token Purchases - {period}</b>\n\n"
+    
+    # Group by token
+    token_summary = {}
+    for purchase in purchases:
+        token_name = purchase.get('tokenName', 'Unknown Token')
+        token_symbol = purchase.get('tokenSymbol', '???')
+        chain = purchase.get('chain', 'unknown')
+        
+        if token_symbol not in token_summary:
+            token_summary[token_symbol] = {
+                'name': token_name,
+                'count': 0,
+                'chains': set(),
+                'latest_time': 0
+            }
+        
+        token_summary[token_symbol]['count'] += 1
+        token_summary[token_symbol]['chains'].add(chain)
+        token_summary[token_symbol]['latest_time'] = max(
+            token_summary[token_symbol]['latest_time'], 
+            int(purchase['timeStamp'])
+        )
+    
+    # Sort by latest purchase
+    sorted_tokens = sorted(
+        token_summary.items(), 
+        key=lambda x: x[1]['latest_time'], 
+        reverse=True
+    )
+    
+    for token_symbol, data in sorted_tokens[:10]:  # Top 10 tokens
+        chains_str = ", ".join(data['chains']).title()
+        latest_time = datetime.utcfromtimestamp(data['latest_time'])
+        time_str = latest_time.strftime('%m/%d %H:%M')
+        
+        response += f"🪙 <b>{token_symbol}</b> ({data['name']})\n"
+        response += f"   📊 {data['count']} purchase(s) | 🔗 {chains_str} | ⏰ {time_str}\n\n"
+    
+    response += f"💡 <i>Total: {len(purchases)} token purchases analyzed</i>"
+    
+    # Limit message length
+    if len(response) > 4000:
+        response = response[:3900] + "\n\n... (truncated)"
+    
+    bot.send_message(chat_id, response)
+
+def handle_auto_track(chat_id, text):
+    """Handle automatic wallet tracking from any message"""
+    wallet_address = is_wallet_address(text)
+        
+        if wallet_address:
+        # Check if user wants to track or just analyze
+        track_keywords = ["track", "monitor", "watch", "follow", "add"]
+        analysis_keywords = ["bought", "purchases", "tokens", "coins", "what did", "analyze"]
+        
+        text_lower = text.lower()
+        
+        if any(keyword in text_lower for keyword in track_keywords):
+            # User wants to track the wallet
+            handle_track(chat_id, wallet_address)
+        elif any(keyword in text_lower for keyword in analysis_keywords):
+            # User wants to analyze purchases
+            handle_purchases(chat_id, text)
+    else:
+            # Default: offer options
+            short_address = f"{wallet_address[:8]}...{wallet_address[-6:]}"
+            response = f"""
+🔍 <b>Wallet Detected!</b>
+
+📋 <b>Address:</b> <code>{short_address}</code>
+
+What would you like to do?
+
+🔹 <b>Track wallet:</b> Get real-time notifications
+🔹 <b>Get insights:</b> Analyze wallet performance  
+🔹 <b>Check purchases:</b> See recent token buys
+
+<i>Type: "track this wallet" or "what did this wallet buy today"</i>
+"""
+            bot.send_message(chat_id, response)
+
 # Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -436,12 +615,34 @@ def webhook():
             wallet = parts[1] if len(parts) > 1 else None
             handle_insights(chat_id, wallet)
         
-        else:
-            bot.send_message(chat_id, "❌ Unknown command. Type /start for help.")
+        elif text.startswith('/purchases') or text.startswith('/bought') or text.startswith('/tokens'):
+            handle_purchases(chat_id, text)
+        
+                            else:
+            # Try to auto-detect wallet addresses or provide help
+            wallet_address = is_wallet_address(text)
+            if wallet_address:
+                handle_auto_track(chat_id, text)
+                        else:
+                bot.send_message(chat_id, """
+❌ <b>Unknown command</b>
+
+<b>Available commands:</b>
+/start - Get started
+/track [wallet] - Track a wallet
+/list - Show tracked wallets
+/untrack [wallet] - Stop tracking
+/score [wallet] - Get wallet score
+/insights [wallet] - Detailed analysis
+/purchases [wallet] [today/week/month] - See token buys
+
+<b>Or just paste a wallet address!</b> 
+<i>Example: "0x123... track this wallet"</i>
+""")
         
         return jsonify({'status': 'ok'})
         
-    except Exception as e:
+                    except Exception as e:
         print(f"Webhook error: {e}")
         return jsonify({'status': 'error', 'message': str(e)})
 
