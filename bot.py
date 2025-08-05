@@ -1,25 +1,29 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
-from telegram.error import Conflict
+#!/usr/bin/env python3
+"""
+TradeSeer Bot - Webhook Version for Cloud Deployment
+This version uses Flask webhooks instead of polling to avoid asyncio issues
+"""
+
 import os
-import asyncio
-import requests
-from dotenv import load_dotenv
-import time
-import threading
 import json
+import requests
+import threading
+import time
 from datetime import datetime, timedelta
-import re
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+import logging
 
 # Load environment variables
 try:
     load_dotenv()
 except Exception as e:
     print(f"Warning: Could not load .env file: {e}")
-    print("Using environment variables directly...")
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Will be set by Render
+PORT = int(os.getenv('PORT', 5000))
 
 # Validate environment variables
 if not TELEGRAM_BOT_TOKEN:
@@ -27,10 +31,50 @@ if not TELEGRAM_BOT_TOKEN:
 if not ETHERSCAN_API_KEY:
     raise ValueError("ETHERSCAN_API_KEY not found in environment variables")
 
+# Global storage
 user_wallets = {}
-user_settings = {}  # Store user preferences
-bot_instance = None
+user_settings = {}
 running = True
+
+# Flask app
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+
+class TelegramBot:
+    def __init__(self, token):
+        self.token = token
+        self.base_url = f"https://api.telegram.org/bot{token}"
+    
+    def send_message(self, chat_id, text, parse_mode='HTML'):
+        """Send a message to a Telegram chat"""
+        url = f"{self.base_url}/sendMessage"
+        data = {
+            'chat_id': chat_id,
+            'text': text,
+            'parse_mode': parse_mode
+        }
+        try:
+            response = requests.post(url, data=data)
+            return response.json()
+        except Exception as e:
+            print(f"Error sending message: {e}")
+            return None
+    
+    def set_webhook(self, webhook_url):
+        """Set the webhook URL"""
+        url = f"{self.base_url}/setWebhook"
+        data = {'url': webhook_url}
+        response = requests.post(url, data=data)
+        return response.json()
+    
+    def delete_webhook(self):
+        """Delete the webhook"""
+        url = f"{self.base_url}/deleteWebhook"
+        response = requests.post(url)
+        return response.json()
+
+# Initialize bot
+bot = TelegramBot(TELEGRAM_BOT_TOKEN)
 
 def get_wallet_score(wallet_address):
     """Calculate a smart wallet score based on transaction patterns"""
@@ -50,26 +94,25 @@ def get_wallet_score(wallet_address):
     successful_trades = 0
     
     for tx in transactions:
-        value = float(tx["value"]) / 1e18
+        value = int(tx["value"]) / 10**18  # Convert from wei to ETH
         total_volume += value
         
-        # Score based on transaction frequency and volume
-        if value > 1:  # High value transactions
-            score += 10
-        elif value > 0.1:  # Medium value
-            score += 5
-        
-        # Check if transaction was successful (not reverted)
-        if tx.get("isError") == "0":
+        if tx["isError"] == "0":  # Successful transaction
             successful_trades += 1
+            score += 10
+        
+        # Bonus for large transactions
+        if value > 1:
+            score += 20
+        elif value > 0.1:
+            score += 10
     
-    # Bonus for high volume and success rate
-    if total_volume > 10:
-        score += 20
-    if successful_trades > len(transactions) * 0.8:  # 80% success rate
-        score += 15
+    # Calculate final score
+    success_rate = successful_trades / len(transactions) if transactions else 0
+    volume_bonus = min(total_volume * 5, 100)  # Cap at 100
     
-    return min(score, 100)  # Cap at 100
+    final_score = int(score * success_rate + volume_bonus)
+    return min(final_score, 100)  # Cap at 100
 
 def get_wallet_insights(wallet_address):
     """Get detailed insights about a wallet"""
@@ -78,587 +121,315 @@ def get_wallet_insights(wallet_address):
     data = response.json()
     
     if data["status"] != "1":
-        return None
+        return "❌ Unable to fetch wallet data"
     
-    transactions = data["result"][:20]
+    transactions = data["result"][:20]  # Last 20 transactions
     if not transactions:
-        return None
+        return "📭 No transactions found for this wallet"
     
-    total_volume = sum(float(tx["value"]) / 1e18 for tx in transactions)
-    avg_tx_value = total_volume / len(transactions)
-    recent_activity = len([tx for tx in transactions if int(tx["timeStamp"]) > time.time() - 86400])  # Last 24h
+    # Analyze patterns
+    total_volume = sum(int(tx["value"]) / 10**18 for tx in transactions)
+    successful_txs = sum(1 for tx in transactions if tx["isError"] == "0")
+    failed_txs = len(transactions) - successful_txs
     
-    return {
-        "total_volume": total_volume,
-        "avg_tx_value": avg_tx_value,
-        "recent_activity": recent_activity,
-        "total_transactions": len(transactions)
-    }
+    # Get recent activity
+    recent_tx = transactions[0]
+    last_activity = datetime.fromtimestamp(int(recent_tx["timeStamp"]))
+    days_ago = (datetime.now() - last_activity).days
+    
+    insights = f"""
+🔍 <b>Wallet Insights</b>
+📊 <b>Recent Activity:</b> {days_ago} days ago
+💰 <b>Volume (Last 20 TXs):</b> {total_volume:.4f} ETH
+✅ <b>Successful:</b> {successful_txs}
+❌ <b>Failed:</b> {failed_txs}
+📈 <b>Success Rate:</b> {(successful_txs/len(transactions)*100):.1f}%
+🎯 <b>Smart Score:</b> {get_wallet_score(wallet_address)}/100
+"""
+    
+    return insights
 
-def check_eth_inflow(wallet_address):
+def check_wallet_activity(wallet_address):
+    """Check if wallet has new transactions in the last 30 minutes"""
     url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
     data = response.json()
-    if data["status"] == "1":
-        for tx in data["result"][:5]:
-            if tx["to"].lower() == wallet_address.lower() and float(tx["value"]) / 1e18 > 0.2:
-                return True
-    return False
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🔍 Track New Wallet", callback_data="track_wallet")],
-        [InlineKeyboardButton("📋 My Tracked Wallets", callback_data="list_wallets")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-        [InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        "🔮 Welcome to *TradeSeer Bot*!\n\n"
-        "Track smart wallets and get alerts *before they trade.*\n\n"
-        "✨ *Quick Start:*\n"
-        "• Just paste any wallet address to track it!\n"
-        "• Or say \"track this wallet: 0x...\"\n"
-        "• Or use the menu buttons below\n\n"
-        "✨ *Unique Features:*\n"
-        "• 🎯 Smart Wallet Scoring\n"
-        "• 📊 Transaction Insights\n"
-        "• ⚡ Real-time Alerts\n"
-        "• 🎨 Customizable Notifications\n\n"
-        "Choose an option below or paste a wallet address:",
-        parse_mode="Markdown",
-        reply_markup=reply_markup
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🔮 *TradeSeer Bot Help*\n\n"
-        "📝 *How to Track Wallets:*\n"
-        "• **Direct paste**: Just paste any wallet address\n"
-        "• **Natural language**: \"Track this wallet: 0x...\"\n"
-        "• **Commands**: \"I want to track 0x...\"\n"
-        "• **Menu**: Use the buttons in /start\n\n"
-        "📋 *Commands:*\n"
-        "• `/start` - Main menu\n"
-        "• `/help` - This help message\n"
-        "• `/list` - Show tracked wallets\n"
-        "• `/dashboard` - Portfolio overview\n\n"
-        "🎯 *Smart Features:*\n"
-        "• Automatic wallet scoring (0-100)\n"
-        "• Transaction volume analysis\n"
-        "• Real-time ETH inflow alerts\n"
-        "• Customizable notification styles",
-        parse_mode="Markdown"
-    )
-
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command version of list wallets"""
-    chat_id = update.effective_chat.id
-    wallets = user_wallets.get(chat_id, set())
+    if data["status"] != "1":
+        return False, None
     
-    if not wallets:
-        await update.message.reply_text(
-            "📭 *No tracked wallets*\n\n"
-            "You haven't tracked any wallets yet. Just paste a wallet address to get started!",
-            parse_mode="Markdown"
-        )
-        return
+    transactions = data["result"][:5]  # Check last 5 transactions
+    cutoff_time = datetime.now() - timedelta(minutes=30)
     
-    message = "📋 *Your Tracked Wallets:*\n\n"
+    for tx in transactions:
+        tx_time = datetime.fromtimestamp(int(tx["timeStamp"]))
+        if tx_time > cutoff_time:
+            value = int(tx["value"]) / 10**18
+            if value > 0:  # Only notify for transactions with value
+                return True, {
+                    'hash': tx['hash'],
+                    'value': value,
+                    'from': tx['from'],
+                    'to': tx['to'],
+                    'timestamp': tx_time
+                }
     
-    for i, wallet in enumerate(wallets, 1):
-        score = get_wallet_score(wallet)
-        insights = get_wallet_insights(wallet)
-        
-        message += f"{i}. `{wallet[:10]}...`\n"
-        message += f"   🎯 Score: {score}/100\n"
-        if insights:
-            message += f"   📊 Volume: {insights['total_volume']:.2f} ETH\n"
-        message += "\n"
-    
-    await update.message.reply_text(message, parse_mode="Markdown")
-
-async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Command version of dashboard"""
-    chat_id = update.effective_chat.id
-    wallets = user_wallets.get(chat_id, set())
-    
-    if not wallets:
-        await update.message.reply_text(
-            "📊 *Dashboard*\n\n"
-            "No data to display yet. Track some wallets to see your dashboard!",
-            parse_mode="Markdown"
-        )
-        return
-    
-    total_score = 0
-    total_volume = 0
-    active_wallets = 0
-    
-    for wallet in wallets:
-        score = get_wallet_score(wallet)
-        insights = get_wallet_insights(wallet)
-        
-        total_score += score
-        if insights:
-            total_volume += insights['total_volume']
-        if score > 50:
-            active_wallets += 1
-    
-    avg_score = total_score / len(wallets) if wallets else 0
-    
-    message = "📊 *Your Dashboard*\n\n"
-    message += f"📈 Total Tracked: {len(wallets)} wallets\n"
-    message += f"🎯 Average Score: {avg_score:.1f}/100\n"
-    message += f"💰 Total Volume: {total_volume:.2f} ETH\n"
-    message += f"🚀 Active Wallets: {active_wallets}\n\n"
-    
-    if avg_score > 70:
-        message += "🌟 *Excellent portfolio!* You're tracking high-value wallets.\n"
-    elif avg_score > 50:
-        message += "📈 *Good selection!* Your wallets show promising activity.\n"
-    else:
-        message += "💡 *Consider adding more active wallets* to improve your tracking.\n"
-    
-    await update.message.reply_text(message, parse_mode="Markdown")
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "track_wallet":
-        await query.edit_message_text(
-            "📝 *Track New Wallet*\n\n"
-            "Simply copy and paste a wallet address below:\n"
-            "Example: `0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6`\n\n"
-            "I'll automatically analyze it and start tracking!",
-            parse_mode="Markdown"
-        )
-        context.user_data['awaiting_wallet'] = True
-    
-    elif query.data == "list_wallets":
-        await list_wallets_callback(query)
-    
-    elif query.data == "settings":
-        await settings_menu(query)
-    
-    elif query.data == "dashboard":
-        await dashboard(query)
-    
-    elif query.data.startswith("track_"):
-        wallet = query.data.replace("track_", "")
-        await track_wallet_from_callback(query, wallet)
-    
-    elif query.data.startswith("untrack_"):
-        wallet = query.data.replace("untrack_", "")
-        await untrack_wallet_from_callback(query, wallet)
-    
-    elif query.data == "back_to_menu":
-        await start(update, context)
-
-async def track_wallet_from_callback(query, wallet_address):
-    chat_id = query.message.chat.id
-    wallet = wallet_address.lower()
-    
-    # Get wallet insights
-    insights = get_wallet_insights(wallet)
-    score = get_wallet_score(wallet)
-    
-    user_wallets.setdefault(chat_id, set()).add(wallet)
-    
-    message = f"✅ *Wallet Tracked Successfully!*\n\n"
-    message += f"📍 Address: `{wallet}`\n"
-    message += f"🎯 Smart Score: {score}/100\n"
-    
-    if insights:
-        message += f"📊 *Insights:*\n"
-        message += f"• Total Volume: {insights['total_volume']:.2f} ETH\n"
-        message += f"• Avg TX Value: {insights['avg_tx_value']:.2f} ETH\n"
-        message += f"• Recent Activity: {insights['recent_activity']} TXs (24h)\n"
-        message += f"• Total TXs: {insights['total_transactions']}\n\n"
-    
-    if score > 70:
-        message += "🚀 *High-value wallet detected!* This wallet shows strong trading patterns.\n"
-    elif score > 40:
-        message += "📈 *Promising wallet!* Moderate activity detected.\n"
-    else:
-        message += "⚠️ *Low activity wallet.* Monitor for potential changes.\n"
-    
-    keyboard = [[InlineKeyboardButton("🗑 Stop Tracking", callback_data=f"untrack_{wallet}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
-
-async def untrack_wallet_from_callback(query, wallet_address):
-    chat_id = query.message.chat.id
-    wallet = wallet_address.lower()
-    
-    if wallet in user_wallets.get(chat_id, set()):
-        user_wallets[chat_id].remove(wallet)
-        await query.edit_message_text(
-            f"🗑 *Stopped tracking* `{wallet}`\n\n"
-            "The wallet has been removed from your tracking list.",
-            parse_mode="Markdown"
-        )
-    else:
-        await query.edit_message_text(
-            "❌ Wallet not found in your tracked list.",
-            parse_mode="Markdown"
-        )
-
-async def list_wallets_callback(query):
-    chat_id = query.message.chat.id
-    wallets = user_wallets.get(chat_id, set())
-    
-    if not wallets:
-        await query.edit_message_text(
-            "📭 *No tracked wallets*\n\n"
-            "You haven't tracked any wallets yet. Use the 'Track New Wallet' option to get started!",
-            parse_mode="Markdown"
-        )
-        return
-    
-    message = "📋 *Your Tracked Wallets:*\n\n"
-    keyboard = []
-    
-    for wallet in wallets:
-        score = get_wallet_score(wallet)
-        insights = get_wallet_insights(wallet)
-        
-        message += f"📍 `{wallet[:10]}...`\n"
-        message += f"🎯 Score: {score}/100\n"
-        if insights:
-            message += f"📊 Volume: {insights['total_volume']:.2f} ETH\n"
-        message += "─" * 20 + "\n"
-        
-        keyboard.append([InlineKeyboardButton(f"🗑 Stop tracking {wallet[:10]}...", callback_data=f"untrack_{wallet}")])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
-
-async def settings_menu(query):
-    chat_id = query.message.chat.id
-    settings = user_settings.get(chat_id, {
-        "alert_threshold": 0.2,
-        "notification_style": "psychic",
-        "auto_score": True
-    })
-    
-    message = "⚙️ *Settings*\n\n"
-    message += f"🔔 Alert Threshold: {settings['alert_threshold']} ETH\n"
-    message += f"🎨 Notification Style: {settings['notification_style'].title()}\n"
-    message += f"🎯 Auto Score: {'Enabled' if settings['auto_score'] else 'Disabled'}\n\n"
-    message += "Customize your tracking experience!"
-    
-    keyboard = [
-        [InlineKeyboardButton("🔔 Change Alert Threshold", callback_data="change_threshold")],
-        [InlineKeyboardButton("🎨 Change Style", callback_data="change_style")],
-        [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
-
-async def dashboard(query):
-    chat_id = query.message.chat.id
-    wallets = user_wallets.get(chat_id, set())
-    
-    if not wallets:
-        await query.edit_message_text(
-            "📊 *Dashboard*\n\n"
-            "No data to display yet. Track some wallets to see your dashboard!",
-            parse_mode="Markdown"
-        )
-        return
-    
-    total_score = 0
-    total_volume = 0
-    active_wallets = 0
-    
-    for wallet in wallets:
-        score = get_wallet_score(wallet)
-        insights = get_wallet_insights(wallet)
-        
-        total_score += score
-        if insights:
-            total_volume += insights['total_volume']
-        if score > 50:
-            active_wallets += 1
-    
-    avg_score = total_score / len(wallets) if wallets else 0
-    
-    message = "📊 *Your Dashboard*\n\n"
-    message += f"📈 Total Tracked: {len(wallets)} wallets\n"
-    message += f"🎯 Average Score: {avg_score:.1f}/100\n"
-    message += f"💰 Total Volume: {total_volume:.2f} ETH\n"
-    message += f"🚀 Active Wallets: {active_wallets}\n\n"
-    
-    if avg_score > 70:
-        message += "🌟 *Excellent portfolio!* You're tracking high-value wallets.\n"
-    elif avg_score > 50:
-        message += "📈 *Good selection!* Your wallets show promising activity.\n"
-    else:
-        message += "💡 *Consider adding more active wallets* to improve your tracking.\n"
-    
-    keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_menu")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
-
-async def handle_wallet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('awaiting_wallet'):
-        # Handle explicit wallet input from menu
-        await handle_explicit_wallet_input(update, context)
-        return
-    
-    # Handle natural language wallet tracking
-    text = update.message.text.strip().lower()
-    
-    # Check for natural language tracking requests
-    tracking_keywords = [
-        "track", "tracking", "monitor", "watch", "follow", "add", "start tracking",
-        "i want to track", "can you track", "please track", "track this", "track wallet"
-    ]
-    
-    # Check if message contains tracking keywords
-    is_tracking_request = any(keyword in text for keyword in tracking_keywords)
-    
-    # Check if it looks like a wallet address (0x followed by 40 hex chars)
-    looks_like_wallet = text.startswith('0x') and len(text) == 42 and all(c in '0123456789abcdef' for c in text[2:])
-    
-    if is_tracking_request or looks_like_wallet:
-        # Extract wallet address from the message
-        wallet_address = extract_wallet_address(text)
-        
-        if wallet_address:
-            await track_wallet_directly(update, context, wallet_address)
-        else:
-            await update.message.reply_text(
-                "❌ *No valid wallet address found*\n\n"
-                "Please provide a valid Ethereum wallet address.\n"
-                "Example: `0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6`",
-                parse_mode="Markdown"
-            )
-    else:
-        # Not a tracking request, ignore
-        return
-
-def extract_wallet_address(text):
-    """Extract wallet address from text"""
-    
-    # Look for 0x followed by 40 hex characters
-    pattern = r'0x[a-fA-F0-9]{40}'
-    matches = re.findall(pattern, text)
-    
-    if matches:
-        return matches[0].lower()
-    
-    return None
-
-async def handle_explicit_wallet_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle wallet input when explicitly waiting for it"""
-    wallet_address = update.message.text.strip()
-    
-    # Basic wallet address validation
-    if not wallet_address.startswith('0x') or len(wallet_address) != 42:
-        await update.message.reply_text(
-            "❌ *Invalid wallet address*\n\n"
-            "Please provide a valid Ethereum wallet address (0x followed by 40 characters).",
-            parse_mode="Markdown"
-        )
-        return
-    
-    await track_wallet_directly(update, context, wallet_address)
-    
-    # Clear the awaiting state
-    context.user_data['awaiting_wallet'] = False
-
-async def track_wallet_directly(update: Update, context: ContextTypes.DEFAULT_TYPE, wallet_address):
-    """Track a wallet directly with full analysis"""
-    chat_id = update.effective_chat.id
-    
-    # Get wallet insights and score
-    insights = get_wallet_insights(wallet_address)
-    score = get_wallet_score(wallet_address)
-    
-    user_wallets.setdefault(chat_id, set()).add(wallet_address.lower())
-    
-    message = f"✅ *Wallet Tracked Successfully!*\n\n"
-    message += f"📍 Address: `{wallet_address}`\n"
-    message += f"🎯 Smart Score: {score}/100\n"
-    
-    if insights:
-        message += f"📊 *Insights:*\n"
-        message += f"• Total Volume: {insights['total_volume']:.2f} ETH\n"
-        message += f"• Avg TX Value: {insights['avg_tx_value']:.2f} ETH\n"
-        message += f"• Recent Activity: {insights['recent_activity']} TXs (24h)\n"
-        message += f"• Total TXs: {insights['total_transactions']}\n\n"
-    
-    if score > 70:
-        message += "🚀 *High-value wallet detected!* This wallet shows strong trading patterns.\n"
-    elif score > 40:
-        message += "📈 *Promising wallet!* Moderate activity detected.\n"
-    else:
-        message += "⚠️ *Low activity wallet.* Monitor for potential changes.\n"
-    
-    keyboard = [[InlineKeyboardButton("🗑 Stop Tracking", callback_data=f"untrack_{wallet_address}")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
-
-def test_notification_system():
-    """Test the notification system"""
-    print("🧪 Testing notification system...")
-    # --- SET YOUR ACTUAL CHAT ID BELOW ---
-    test_chat_id = 5079471554  # Replace with your actual chat ID (remove quotes)
-    test_message = "🧪 *Test Notification*\n\nThis is a test message to verify the notification system is working properly.\n\n✅ If you received this, the notification system is working!"
-    
-    try:
-        send_telegram_message(test_chat_id, test_message)
-        print("✅ Test notification sent successfully!")
-        return True
-    except Exception as e:
-        print(f"❌ Test notification failed: {e}")
-        return False
-
-def send_telegram_message(chat_id, message):
-    """Send message using direct HTTP API to avoid event loop issues"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-    try:
-        response = requests.post(url, json=data)
-        if response.status_code == 200:
-            print(f"✅ Alert sent to {chat_id}")
-            return True
-        else:
-            print(f"❌ Failed to send alert: {response.text}")
-            return False
-    except Exception as e:
-        print(f"❌ Error sending message: {e}")
-        return False
+    return False, None
 
 def monitor_wallets():
-    """Background thread to monitor wallets"""
+    """Background thread to monitor wallet activity"""
     print("🔮 Starting wallet monitoring...")
-    print("📡 Monitoring wallets for ETH inflows every 30 seconds...")
     
     while running:
         try:
-            total_wallets = sum(len(wallets) for wallets in user_wallets.values())
-            if total_wallets > 0:
-                print(f"🔍 Checking {total_wallets} wallets for ETH inflows...")
-            
-            for chat_id, wallets in user_wallets.items():
+            for user_id, wallets in user_wallets.items():
                 for wallet in wallets:
-                    try:
-                        if check_eth_inflow(wallet):
-                            print(f"⚠️ ETH inflow detected for {wallet[:10]}...")
-                            
-                            settings = user_settings.get(chat_id, {"notification_style": "psychic"})
-                            style = settings.get("notification_style", "psychic")
-                            
-                            if style == "psychic":
-                                message = (
-                                    f"⚠️ *Psychic Ping*: `{wallet}` just received ETH!\n"
-                                    "🧠 Possible buy prep detected.\n"
-                                    "_Stay alert, anon._"
-                                )
-                            elif style == "professional":
-                                message = (
-                                    f"📊 *Alert*: `{wallet}` received significant ETH inflow\n"
-                                    "💼 Potential trading activity detected.\n"
-                                    "_Monitor for follow-up transactions._"
-                                )
-                            else:  # minimal
-                                message = f"🔔 `{wallet}` received ETH"
-                            
-                            success = send_telegram_message(chat_id, message)
-                            if success:
-                                print(f"✅ Alert sent successfully to user {chat_id}")
-                            else:
-                                print(f"❌ Failed to send alert to user {chat_id}")
-                        else:
-                            print(f"✅ No ETH inflow detected for {wallet[:10]}...")
-                    except Exception as e:
-                        print(f"❌ Error checking {wallet}: {e}")
-            time.sleep(30)  # Check every 30 seconds
-        except Exception as e:
-            print(f"❌ Error in monitor thread: {e}")
-            time.sleep(30)
+                    has_activity, tx_data = check_wallet_activity(wallet)
+                    
+                    if has_activity and tx_data:
+                        value = tx_data['value']
+                        message = f"""
+🚨 <b>Wallet Activity Detected!</b>
 
-async def main():
-    global bot_instance, running
+💰 <b>Amount:</b> {value:.4f} ETH
+🏦 <b>Wallet:</b> <code>{wallet}</code>
+🔗 <b>Hash:</b> <code>{tx_data['hash'][:20]}...</code>
+⏰ <b>Time:</b> {tx_data['timestamp'].strftime('%H:%M:%S')}
+
+🎯 <b>Smart Score:</b> {get_wallet_score(wallet)}/100
+"""
+                        
+                        bot.send_message(user_id, message)
+            
+            time.sleep(30)  # Check every 30 seconds
+            
+        except Exception as e:
+            print(f"Error in monitoring: {e}")
+            time.sleep(60)  # Wait longer on error
+
+def handle_start(chat_id):
+    """Handle /start command"""
+    message = """
+🔮 <b>Welcome to TradeSeer!</b>
+
+🎯 Track smart wallets and get real-time notifications
+📊 Analyze wallet performance with AI insights
+⚡ Get alerts for high-value transactions
+
+<b>Commands:</b>
+/track [wallet] - Track a wallet
+/list - Show tracked wallets  
+/untrack [wallet] - Stop tracking
+/score [wallet] - Get wallet score
+/insights [wallet] - Detailed analysis
+
+Ready to start tracking? 🚀
+"""
+    bot.send_message(chat_id, message)
+
+def handle_track(chat_id, wallet_address):
+    """Handle /track command"""
+    if not wallet_address:
+        bot.send_message(chat_id, "❌ Please provide a wallet address: /track 0x...")
+        return
     
-    print("🔮 TradeSeer Bot is starting...")
-    print("📡 Setting up wallet monitoring...")
+    # Validate wallet address
+    if not wallet_address.startswith('0x') or len(wallet_address) != 42:
+        bot.send_message(chat_id, "❌ Invalid wallet address format")
+        return
+    
+    # Initialize user wallets if not exists
+    if chat_id not in user_wallets:
+        user_wallets[chat_id] = []
+    
+    # Check if already tracking
+    if wallet_address.lower() in [w.lower() for w in user_wallets[chat_id]]:
+        bot.send_message(chat_id, "⚠️ Already tracking this wallet!")
+        return
+    
+    # Add wallet
+    user_wallets[chat_id].append(wallet_address)
+    
+    # Get initial score
+    score = get_wallet_score(wallet_address)
+    
+    message = f"""
+✅ <b>Wallet Added to Tracking!</b>
+
+🏦 <b>Address:</b> <code>{wallet_address}</code>
+🎯 <b>Smart Score:</b> {score}/100
+📡 <b>Status:</b> Now monitoring for activity
+
+You'll receive notifications for new transactions! 🔔
+"""
+    bot.send_message(chat_id, message)
+
+def handle_list(chat_id):
+    """Handle /list command"""
+    if chat_id not in user_wallets or not user_wallets[chat_id]:
+        bot.send_message(chat_id, "📭 You're not tracking any wallets yet.\n\nUse /track [wallet] to start!")
+        return
+    
+    message = "📋 <b>Your Tracked Wallets:</b>\n\n"
+    
+    for i, wallet in enumerate(user_wallets[chat_id], 1):
+        score = get_wallet_score(wallet)
+        short_address = f"{wallet[:8]}...{wallet[-6:]}"
+        message += f"{i}. <code>{short_address}</code> (Score: {score}/100)\n"
+    
+    message += f"\n💡 Total: {len(user_wallets[chat_id])} wallets"
+    bot.send_message(chat_id, message)
+
+def handle_untrack(chat_id, wallet_address):
+    """Handle /untrack command"""
+    if not wallet_address:
+        bot.send_message(chat_id, "❌ Please provide a wallet address: /untrack 0x...")
+        return
+    
+    if chat_id not in user_wallets:
+        bot.send_message(chat_id, "📭 You're not tracking any wallets")
+        return
+    
+    # Find and remove wallet
+    for wallet in user_wallets[chat_id]:
+        if wallet.lower() == wallet_address.lower():
+            user_wallets[chat_id].remove(wallet)
+            bot.send_message(chat_id, f"✅ Stopped tracking wallet: <code>{wallet}</code>")
+            return
+    
+    bot.send_message(chat_id, "❌ Wallet not found in your tracking list")
+
+def handle_score(chat_id, wallet_address):
+    """Handle /score command"""
+    if not wallet_address:
+        bot.send_message(chat_id, "❌ Please provide a wallet address: /score 0x...")
+        return
+    
+    if not wallet_address.startswith('0x') or len(wallet_address) != 42:
+        bot.send_message(chat_id, "❌ Invalid wallet address format")
+        return
+    
+    score = get_wallet_score(wallet_address)
+    
+    # Score interpretation
+    if score >= 80:
+        rating = "🔥 Extremely Smart"
+        emoji = "🚀"
+    elif score >= 60:
+        rating = "⭐ Very Smart"
+        emoji = "📈"
+    elif score >= 40:
+        rating = "✅ Smart"
+        emoji = "💎"
+    elif score >= 20:
+        rating = "⚠️ Average"
+        emoji = "📊"
+    else:
+        rating = "❌ Low Activity"
+        emoji = "💤"
+    
+    message = f"""
+{emoji} <b>Wallet Score Analysis</b>
+
+🏦 <b>Address:</b> <code>{wallet_address}</code>
+🎯 <b>Smart Score:</b> {score}/100
+📊 <b>Rating:</b> {rating}
+
+💡 <i>Based on transaction patterns, success rate, and volume</i>
+"""
+    
+    bot.send_message(chat_id, message)
+
+def handle_insights(chat_id, wallet_address):
+    """Handle /insights command"""
+    if not wallet_address:
+        bot.send_message(chat_id, "❌ Please provide a wallet address: /insights 0x...")
+        return
+    
+    if not wallet_address.startswith('0x') or len(wallet_address) != 42:
+        bot.send_message(chat_id, "❌ Invalid wallet address format")
+        return
+    
+    insights = get_wallet_insights(wallet_address)
+    bot.send_message(chat_id, insights)
+
+# Webhook endpoint
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming webhook from Telegram"""
+    try:
+        update = request.get_json()
+        
+        if 'message' not in update:
+            return jsonify({'status': 'ok'})
+        
+        message = update['message']
+        chat_id = message['chat']['id']
+        text = message.get('text', '')
+        
+        print(f"Received message: {text} from {chat_id}")
+        
+        if text.startswith('/start'):
+            handle_start(chat_id)
+        
+        elif text.startswith('/track'):
+            parts = text.split(' ', 1)
+            wallet = parts[1] if len(parts) > 1 else None
+            handle_track(chat_id, wallet)
+        
+        elif text.startswith('/list'):
+            handle_list(chat_id)
+        
+        elif text.startswith('/untrack'):
+            parts = text.split(' ', 1)
+            wallet = parts[1] if len(parts) > 1 else None
+            handle_untrack(chat_id, wallet)
+        
+        elif text.startswith('/score'):
+            parts = text.split(' ', 1)
+            wallet = parts[1] if len(parts) > 1 else None
+            handle_score(chat_id, wallet)
+        
+        elif text.startswith('/insights'):
+            parts = text.split(' ', 1)
+            wallet = parts[1] if len(parts) > 1 else None
+            handle_insights(chat_id, wallet)
+        
+        else:
+            bot.send_message(chat_id, "❌ Unknown command. Type /start for help.")
+        
+        return jsonify({'status': 'ok'})
+        
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy', 'wallets_tracked': len(user_wallets)})
+
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Set webhook URL"""
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    result = bot.set_webhook(webhook_url)
+    return jsonify(result)
+
+if __name__ == '__main__':
+    print("🔮 TradeSeer Bot Starting...")
     
     # Start monitoring thread
     monitor_thread = threading.Thread(target=monitor_wallets, daemon=True)
     monitor_thread.start()
+    print("📡 Monitoring thread started")
     
-    # Create and run the bot
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    bot_instance = app.bot
+    # Set webhook if URL is provided
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        result = bot.set_webhook(webhook_url)
+        print(f"Webhook set: {result}")
     
-    # Add error handler for conflicts
-    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if isinstance(context.error, Conflict):
-            print(f"⚠️ Bot conflict detected: {context.error}")
-            print("💡 This usually means another bot instance is running")
-        else:
-            print(f"❌ Error: {context.error}")
-    
-    app.add_error_handler(error_handler)
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("dashboard", dashboard_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet_input))
-    
-    print("✅ Bot is ready! Monitoring wallets for ETH inflows...")
-    print("📱 Send /start to your bot to begin!")
-    
-    try:
-        await app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-    except KeyboardInterrupt:
-        print("\n🛑 Shutting down TradeSeer Bot...")
-        running = False
-    except Conflict as e:
-        print(f"⚠️ Bot conflict detected: {e}")
-        print("💡 Bot will exit and Render will restart it automatically")
-        running = False
-    except Exception as e:
-        print(f"❌ Error running bot: {e}")
-        print("💡 Bot will exit and Render will restart it automatically")
-        running = False
-
-# To run:
-if __name__ == "__main__":
-    from telegram.ext import ApplicationBuilder, CommandHandler
-    import asyncio
-
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("dashboard", dashboard_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet_input))
-
-    async def run():
-        # Start the monitoring thread
-        monitor_thread = threading.Thread(target=monitor_wallets, daemon=True)
-        monitor_thread.start()
-        await app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
-    asyncio.run(run())
+    # Start Flask app
+    print(f"🚀 Starting server on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
