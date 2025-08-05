@@ -3,10 +3,12 @@ services:
     name: tradeseer-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    startCommand: python webhook_bot.py
     plan: free
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: ETHERSCAN_API_KEY
+        sync: false
+      - key: WEBHOOK_URL
         sync: false 
