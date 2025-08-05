@@ -608,11 +608,15 @@ def main():
     bot_instance = app.bot
     
     # Clear any existing webhooks to prevent conflicts
-    try:
-        bot_instance.delete_webhook(drop_pending_updates=True)
-        print("🧹 Cleared existing webhooks")
-    except Exception as e:
-        print(f"⚠️ Could not clear webhooks: {e}")
+    async def clear_webhooks():
+        try:
+            await bot_instance.delete_webhook(drop_pending_updates=True)
+            print("🧹 Cleared existing webhooks")
+        except Exception as e:
+            print(f"⚠️ Could not clear webhooks: {e}")
+    
+    # Run webhook cleanup
+    asyncio.run(clear_webhooks())
     
     # Add error handler for conflicts
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -622,8 +626,8 @@ def main():
             print("🔄 Restarting in 30 seconds...")
             await asyncio.sleep(30)
             # Restart the bot
-            context.application.stop()
-            context.application.start()
+            await context.application.stop()
+            await context.application.start()
         else:
             print(f"❌ Error: {context.error}")
     
@@ -645,14 +649,12 @@ def main():
         running = False
     except Conflict as e:
         print(f"⚠️ Bot conflict detected: {e}")
-        print("💡 Attempting to restart in 10 seconds...")
-        time.sleep(10)
-        main()  # Restart the bot
+        print("💡 Bot will exit and Render will restart it automatically")
+        running = False
     except Exception as e:
         print(f"❌ Error running bot: {e}")
-        print("🔄 Restarting in 10 seconds...")
-        time.sleep(10)
-        main()  # Restart the bot
+        print("💡 Bot will exit and Render will restart it automatically")
+        running = False
 
 # To run:
 if __name__ == "__main__":
