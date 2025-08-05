@@ -5,6 +5,7 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python webhook_bot.py
     plan: free
+    # Force Render to use webhook version
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
