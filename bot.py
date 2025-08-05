@@ -1,5 +1,6 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.error import Conflict
 import os
 import asyncio
 import requests
@@ -616,9 +617,13 @@ def main():
     print("✅ Bot is ready! Monitoring wallets for ETH inflows...")
     print("📱 Send /start to your bot to begin!")
     try:
-        app.run_polling()
+        app.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down TradeSeer Bot...")
+        running = False
+    except Conflict as e:
+        print(f"⚠️ Bot conflict detected: {e}")
+        print("💡 Make sure only one instance of the bot is running")
         running = False
     except Exception as e:
         print(f"❌ Error running bot: {e}")
