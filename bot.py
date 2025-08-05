@@ -76,16 +76,41 @@ class TelegramBot:
 # Initialize bot
 bot = TelegramBot(TELEGRAM_BOT_TOKEN)
 
+def get_transactions_from_chain(wallet_address, chain):
+    """Get transactions from a specific chain"""
+    if chain == "ethereum":
+        url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    elif chain == "base":
+        url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    else:
+        return []
+    
+    try:
+        response = requests.get(url)
+        data = response.json()
+        
+        if data["status"] == "1" and "result" in data:
+            transactions = data["result"]
+            # Add chain info to each transaction
+            for tx in transactions:
+                tx["chain"] = chain
+            return transactions
+        return []
+    except Exception as e:
+        print(f"Error fetching {chain} transactions: {e}")
+        return []
+
 def get_wallet_score(wallet_address):
-    """Calculate a smart wallet score based on transaction patterns"""
-    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
-    response = requests.get(url)
-    data = response.json()
+    """Calculate a smart wallet score based on transaction patterns across Ethereum and Base"""
+    # Get transactions from both Ethereum and Base
+    eth_transactions = get_transactions_from_chain(wallet_address, "ethereum")
+    base_transactions = get_transactions_from_chain(wallet_address, "base")
     
-    if data["status"] != "1":
-        return 0
+    # Combine and sort by timestamp (most recent first)
+    all_transactions = eth_transactions + base_transactions
+    all_transactions.sort(key=lambda x: int(x["timeStamp"]), reverse=True)
     
-    transactions = data["result"][:50]  # Last 50 transactions
+    transactions = all_transactions[:50]  # Last 50 transactions across both chains
     if not transactions:
         return 0
     
@@ -115,22 +140,27 @@ def get_wallet_score(wallet_address):
     return min(final_score, 100)  # Cap at 100
 
 def get_wallet_insights(wallet_address):
-    """Get detailed insights about a wallet"""
-    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
-    response = requests.get(url)
-    data = response.json()
+    """Get detailed insights about a wallet across Ethereum and Base"""
+    # Get transactions from both chains
+    eth_transactions = get_transactions_from_chain(wallet_address, "ethereum")
+    base_transactions = get_transactions_from_chain(wallet_address, "base")
     
-    if data["status"] != "1":
-        return "❌ Unable to fetch wallet data"
+    # Combine and sort by timestamp (most recent first)
+    all_transactions = eth_transactions + base_transactions
+    all_transactions.sort(key=lambda x: int(x["timeStamp"]), reverse=True)
     
-    transactions = data["result"][:20]  # Last 20 transactions
+    transactions = all_transactions[:20]  # Last 20 transactions across both chains
     if not transactions:
-        return "📭 No transactions found for this wallet"
+        return "📭 No transactions found for this wallet on Ethereum or Base"
     
     # Analyze patterns
     total_volume = sum(int(tx["value"]) / 10**18 for tx in transactions)
     successful_txs = sum(1 for tx in transactions if tx["isError"] == "0")
     failed_txs = len(transactions) - successful_txs
+    
+    # Chain distribution
+    eth_txs = sum(1 for tx in transactions if tx.get("chain") == "ethereum")
+    base_txs = sum(1 for tx in transactions if tx.get("chain") == "base")
     
     # Get recent activity
     recent_tx = transactions[0]
@@ -139,11 +169,13 @@ def get_wallet_insights(wallet_address):
     
     # Format the timestamp for better readability
     last_activity_str = last_activity.strftime('%Y-%m-%d %H:%M UTC')
+    last_chain = recent_tx.get("chain", "unknown").title()
     
     insights = f"""
-🔍 <b>Wallet Insights</b>
-📊 <b>Last Activity:</b> {days_ago} days ago ({last_activity_str})
+🔍 <b>Wallet Insights (Multi-Chain)</b>
+📊 <b>Last Activity:</b> {days_ago} days ago ({last_activity_str}) on {last_chain}
 💰 <b>Volume (Last 20 TXs):</b> {total_volume:.4f} ETH
+🔗 <b>Chain Distribution:</b> ETH: {eth_txs} | Base: {base_txs}
 ✅ <b>Successful:</b> {successful_txs}
 ❌ <b>Failed:</b> {failed_txs}
 📈 <b>Success Rate:</b> {(successful_txs/len(transactions)*100):.1f}%
@@ -153,15 +185,16 @@ def get_wallet_insights(wallet_address):
     return insights
 
 def check_wallet_activity(wallet_address):
-    """Check if wallet has new transactions in the last 30 minutes"""
-    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
-    response = requests.get(url)
-    data = response.json()
+    """Check if wallet has new transactions in the last 30 minutes on both chains"""
+    # Get recent transactions from both chains
+    eth_transactions = get_transactions_from_chain(wallet_address, "ethereum")[:5]
+    base_transactions = get_transactions_from_chain(wallet_address, "base")[:5]
     
-    if data["status"] != "1":
-        return False, None
+    # Combine and sort by timestamp (most recent first)
+    all_transactions = eth_transactions + base_transactions
+    all_transactions.sort(key=lambda x: int(x["timeStamp"]), reverse=True)
     
-    transactions = data["result"][:5]  # Check last 5 transactions
+    transactions = all_transactions[:5]  # Check last 5 transactions across both chains
     cutoff_time = datetime.utcnow() - timedelta(minutes=30)
     
     for tx in transactions:
@@ -169,12 +202,14 @@ def check_wallet_activity(wallet_address):
         if tx_time > cutoff_time:
             value = int(tx["value"]) / 10**18
             if value > 0:  # Only notify for transactions with value
+                chain = tx.get("chain", "unknown")
                 return True, {
                     'hash': tx['hash'],
                     'value': value,
                     'from': tx['from'],
                     'to': tx['to'],
-                    'timestamp': tx_time
+                    'timestamp': tx_time,
+                    'chain': chain
                 }
     
     return False, None
@@ -191,10 +226,13 @@ def monitor_wallets():
                     
                     if has_activity and tx_data:
                         value = tx_data['value']
+                        chain = tx_data.get('chain', 'unknown').title()
+                        chain_emoji = "🔷" if chain.lower() == "base" else "⚡"
                         message = f"""
 🚨 <b>Wallet Activity Detected!</b>
 
 💰 <b>Amount:</b> {value:.4f} ETH
+{chain_emoji} <b>Chain:</b> {chain}
 🏦 <b>Wallet:</b> <code>{wallet}</code>
 🔗 <b>Hash:</b> <code>{tx_data['hash'][:20]}...</code>
 ⏰ <b>Time:</b> {tx_data['timestamp'].strftime('%H:%M:%S')}
