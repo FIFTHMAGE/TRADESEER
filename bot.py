@@ -643,9 +643,22 @@ async def main():
 
 # To run:
 if __name__ == "__main__":
+    from telegram.ext import ApplicationBuilder, CommandHandler
     import asyncio
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Shutting down...")
+
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("list", list_command))
+    app.add_handler(CommandHandler("dashboard", dashboard_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_wallet_input))
+
+    async def run():
+        # Start the monitoring thread
+        monitor_thread = threading.Thread(target=monitor_wallets, daemon=True)
+        monitor_thread.start()
+        await app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
+    asyncio.run(run())
