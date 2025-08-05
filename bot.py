@@ -140,13 +140,13 @@ def get_transactions_from_chain(wallet_address, chain):
     if chain == "ethereum":
         url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     elif chain == "base":
-    url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+        url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     else:
         return []
     
     try:
-    response = requests.get(url)
-    data = response.json()
+        response = requests.get(url)
+        data = response.json()
     
         if data["status"] == "1" and "result" in data:
             transactions = data["result"]
