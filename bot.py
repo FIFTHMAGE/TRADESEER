@@ -46,7 +46,7 @@ class TelegramBot:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
     
-    def send_message(self, chat_id, text, parse_mode='HTML'):
+    def send_message(self, chat_id, text, parse_mode='HTML', reply_markup=None):
         """Send a message to a Telegram chat"""
         url = f"{self.base_url}/sendMessage"
         payload = {
@@ -54,6 +54,8 @@ class TelegramBot:
             'text': text,
             'parse_mode': parse_mode
         }
+        if reply_markup:
+            payload['reply_markup'] = reply_markup
         response = requests.post(url, json=payload)
         return response.json()
     
@@ -63,8 +65,50 @@ class TelegramBot:
         payload = {'url': webhook_url}
         response = requests.post(url, json=payload)
         return response.json()
+    
+    def set_my_commands(self, commands):
+        """Set bot commands menu"""
+        url = f"{self.base_url}/setMyCommands"
+        payload = {'commands': commands}
+        response = requests.post(url, json=payload)
+        return response.json()
 
 bot = TelegramBot(TELEGRAM_BOT_TOKEN)
+
+def create_inline_keyboard(buttons):
+    """Create inline keyboard markup"""
+    return {
+        "inline_keyboard": buttons
+    }
+
+def create_main_menu_keyboard():
+    """Create main menu inline keyboard"""
+    return create_inline_keyboard([
+        [
+            {"text": "📊 List Wallets", "callback_data": "list_wallets"},
+            {"text": "🔍 Quick Insights", "callback_data": "quick_insights"}
+        ],
+        [
+            {"text": "📱 How to Track", "callback_data": "how_to_track"},
+            {"text": "💡 Help", "callback_data": "help"}
+        ]
+    ])
+
+def set_bot_commands():
+    """Set the bot commands menu for mobile"""
+    commands = [
+        {"command": "start", "description": "🔮 Start TradeSeer - Main menu"},
+        {"command": "track", "description": "📈 Track a wallet address"},
+        {"command": "list", "description": "📊 Show tracked wallets"},
+        {"command": "insights", "description": "🔍 Get wallet analysis"},
+        {"command": "untrack", "description": "❌ Stop tracking wallet"}
+    ]
+    
+    try:
+        result = bot.set_my_commands(commands)
+        print(f"✅ Bot commands set: {result}")
+    except Exception as e:
+        print(f"❌ Failed to set commands: {e}")
 
 def is_wallet_address(text):
     """Check if text contains a valid wallet address"""
@@ -376,7 +420,7 @@ def handle_start(chat_id):
     message = """
 🔮 <b>Welcome to TradeSeer!</b>
 
-I'm your advanced crypto wallet tracker with multi-chain support! Here's what I can do:
+I'm your advanced crypto wallet tracker with multi-chain support!
 
 🎯 <b>Smart Features:</b>
 • <b>Auto-detect wallets</b> - Just paste any wallet address!
@@ -384,20 +428,12 @@ I'm your advanced crypto wallet tracker with multi-chain support! Here's what I 
 • <b>Multi-chain tracking</b> - Ethereum + Base networks
 • <b>Real-time alerts</b> - Get notified of new transactions
 
-📱 <b>Easy Commands:</b>
-• <code>/track [wallet]</code> - Track a wallet
-• <code>/insights [wallet]</code> - Get wallet analysis  
-• <code>/list</code> - Show tracked wallets
-• <code>/untrack [wallet]</code> - Stop tracking
+📱 <b>Mobile Tip:</b> Use the menu button (≡) or type / to see all commands!
 
-🚀 <b>Smart Usage:</b>
-• Paste wallet + "track this" = Auto-track
-• Paste wallet + "what bought" = Purchase analysis
-• Ask "what tokens did [wallet] buy this week?"
-
-<b>Just try pasting a wallet address - I'll detect it automatically!</b> ✨
+<b>Try pasting a wallet address or use the buttons below:</b> ✨
 """
-    bot.send_message(chat_id, message)
+    keyboard = create_main_menu_keyboard()
+    bot.send_message(chat_id, message, reply_markup=keyboard)
 
 def handle_track(chat_id, wallet_address):
     """Handle wallet tracking"""
@@ -567,11 +603,91 @@ Or use commands:
 """
             bot.send_message(chat_id, message)
 
+def handle_callback_query(callback_query):
+    """Handle inline keyboard button presses"""
+    chat_id = callback_query['message']['chat']['id']
+    callback_data = callback_query['data']
+    
+    if callback_data == "list_wallets":
+        handle_list(chat_id)
+    elif callback_data == "quick_insights":
+        message = """
+🔍 <b>Quick Insights</b>
+
+To get wallet insights, you can:
+
+1️⃣ <b>Command:</b> <code>/insights 0xYourWalletHere</code>
+
+2️⃣ <b>Smart way:</b> Just paste a wallet address and say "analyze this"
+
+3️⃣ <b>Quick questions:</b>
+• "What did 0x123... buy today?"
+• "Analyze this wallet: 0x456..."
+
+Try pasting a wallet address now! 📊
+"""
+        bot.send_message(chat_id, message)
+    elif callback_data == "how_to_track":
+        message = """
+📱 <b>How to Track Wallets</b>
+
+<b>Method 1 - Commands:</b>
+• <code>/track 0xYourWalletAddress</code>
+
+<b>Method 2 - Smart Detection:</b>
+• Paste wallet + "track this"
+• "Monitor this wallet: 0x123..."
+
+<b>Method 3 - Auto-Detection:</b>
+• Just paste any wallet address
+• I'll offer tracking options!
+
+<b>Example wallet to try:</b>
+<code>0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5</code>
+
+📊 <i>Paste it and say "track this wallet"!</i>
+"""
+        bot.send_message(chat_id, message)
+    elif callback_data == "help":
+        message = """
+💡 <b>TradeSeer Help</b>
+
+<b>🎯 Main Commands:</b>
+• <code>/start</code> - Main menu
+• <code>/track [wallet]</code> - Track wallet
+• <code>/list</code> - Show tracked wallets  
+• <code>/insights [wallet]</code> - Analyze wallet
+• <code>/untrack [wallet]</code> - Stop tracking
+
+<b>🤖 Smart Features:</b>
+• Paste any wallet address for auto-detection
+• Ask "what did [wallet] buy today/week/month?"
+• Say "track this wallet" with any address
+
+<b>📱 Mobile Tips:</b>
+• Use menu button (≡) for commands
+• Type / to see command list
+• Buttons work better than typing!
+
+<b>🌐 Supported Networks:</b>
+• Ethereum Mainnet
+• Base Network
+
+Need more help? Just paste a wallet and try! 🚀
+"""
+        keyboard = create_main_menu_keyboard()
+        bot.send_message(chat_id, message, reply_markup=keyboard)
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming webhook from Telegram"""
     try:
         update = request.get_json()
+        
+        # Handle callback queries (inline keyboard button presses)
+        if 'callback_query' in update:
+            handle_callback_query(update['callback_query'])
+            return jsonify({'status': 'ok'})
         
         if 'message' in update:
             message = update['message']
@@ -606,21 +722,17 @@ def webhook():
                     message = """
 ❓ <b>Unknown command!</b>
 
-🎯 <b>Available commands:</b>
-• <code>/start</code> - Show welcome message
-• <code>/track [wallet]</code> - Track a wallet
-• <code>/insights [wallet]</code> - Analyze wallet
-• <code>/list</code> - Show tracked wallets
-• <code>/untrack [wallet]</code> - Stop tracking
+📱 <b>Mobile Tip:</b> Use the menu button (≡) or buttons below!
 
-💡 <b>Smart features:</b>
-• Just paste a wallet address!
-• Ask "what did 0x123... buy today?"
-• Say "track this wallet: 0x456..."
+💡 <b>Quick Options:</b>
+• Just paste a wallet address for auto-detection
+• Ask "what did [wallet] buy today?"
+• Use the buttons below for easy access
 
-Try: <code>/start</code> for full instructions!
+<b>Try typing / to see all commands!</b> 📋
 """
-                    bot.send_message(chat_id, message)
+                    keyboard = create_main_menu_keyboard()
+                    bot.send_message(chat_id, message, reply_markup=keyboard)
         
         return jsonify({'status': 'ok'})
     
@@ -654,6 +766,9 @@ def home():
 
 if __name__ == '__main__':
     print("🔮 Starting TradeSeer Bot...")
+    
+    # Set bot commands for mobile support
+    set_bot_commands()
     
     # Start monitoring thread
     monitor_thread = threading.Thread(target=monitor_wallets, daemon=True)
