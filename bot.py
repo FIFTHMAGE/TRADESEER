@@ -593,7 +593,7 @@ def monitor_wallets():
             print(f"❌ Error in monitor thread: {e}")
             time.sleep(30)
 
-def main():
+async def main():
     global bot_instance, running
     
     print("🔮 TradeSeer Bot is starting...")
@@ -607,27 +607,11 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     bot_instance = app.bot
     
-    # Clear any existing webhooks to prevent conflicts
-    async def clear_webhooks():
-        try:
-            await bot_instance.delete_webhook(drop_pending_updates=True)
-            print("🧹 Cleared existing webhooks")
-        except Exception as e:
-            print(f"⚠️ Could not clear webhooks: {e}")
-    
-    # Run webhook cleanup
-    asyncio.run(clear_webhooks())
-    
     # Add error handler for conflicts
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         if isinstance(context.error, Conflict):
             print(f"⚠️ Bot conflict detected: {context.error}")
             print("💡 This usually means another bot instance is running")
-            print("🔄 Restarting in 30 seconds...")
-            await asyncio.sleep(30)
-            # Restart the bot
-            await context.application.stop()
-            await context.application.start()
         else:
             print(f"❌ Error: {context.error}")
     
@@ -642,8 +626,11 @@ def main():
     
     print("✅ Bot is ready! Monitoring wallets for ETH inflows...")
     print("📱 Send /start to your bot to begin!")
+    
     try:
-        app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+        await app.initialize()
+        await app.start()
+        await app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down TradeSeer Bot...")
         running = False
@@ -655,7 +642,10 @@ def main():
         print(f"❌ Error running bot: {e}")
         print("💡 Bot will exit and Render will restart it automatically")
         running = False
+    finally:
+        await app.stop()
+        await app.shutdown()
 
 # To run:
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
