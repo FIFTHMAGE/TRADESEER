@@ -628,8 +628,6 @@ async def main():
     print("📱 Send /start to your bot to begin!")
     
     try:
-        await app.initialize()
-        await app.start()
         await app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         print("\n🛑 Shutting down TradeSeer Bot...")
@@ -642,16 +640,21 @@ async def main():
         print(f"❌ Error running bot: {e}")
         print("💡 Bot will exit and Render will restart it automatically")
         running = False
-    finally:
-        await app.stop()
-        await app.shutdown()
 
 # To run:
 if __name__ == "__main__":
     import asyncio
-
-    loop = asyncio.get_event_loop()
+    
+    # Simple approach that works with Render
     try:
-        loop.run_until_complete(main())
+        asyncio.run(main())
+    except RuntimeError:
+        # If there's already a running loop, just run the main function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(main())
+        finally:
+            loop.close()
     except KeyboardInterrupt:
-        pass
+        print("\n🛑 Shutting down...")
