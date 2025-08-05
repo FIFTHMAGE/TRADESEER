@@ -280,7 +280,7 @@ def monitor_wallets():
     while running:
         try:
             for user_id, wallets in user_wallets.items():
-    for wallet in wallets:
+                for wallet in wallets:
                     has_activity, tx_data = check_wallet_activity(wallet)
                     
                     if has_activity and tx_data:
