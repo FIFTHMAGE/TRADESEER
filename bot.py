@@ -644,17 +644,8 @@ async def main():
 # To run:
 if __name__ == "__main__":
     import asyncio
-    
-    # Simple approach that works with Render
+    loop = asyncio.get_event_loop()
     try:
-        asyncio.run(main())
-    except RuntimeError:
-        # If there's already a running loop, just run the main function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(main())
-        finally:
-            loop.close()
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\n🛑 Shutting down...")
