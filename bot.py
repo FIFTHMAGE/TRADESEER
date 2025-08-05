@@ -78,7 +78,7 @@ bot = TelegramBot(TELEGRAM_BOT_TOKEN)
 
 def get_wallet_score(wallet_address):
     """Calculate a smart wallet score based on transaction patterns"""
-    url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
     data = response.json()
     
@@ -116,7 +116,7 @@ def get_wallet_score(wallet_address):
 
 def get_wallet_insights(wallet_address):
     """Get detailed insights about a wallet"""
-    url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
     data = response.json()
     
@@ -151,7 +151,7 @@ def get_wallet_insights(wallet_address):
 
 def check_wallet_activity(wallet_address):
     """Check if wallet has new transactions in the last 30 minutes"""
-    url = f"https://api.basescan.org/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
+    url = f"https://api.etherscan.io/api?module=account&action=txlist&address={wallet_address}&sort=desc&apikey={ETHERSCAN_API_KEY}"
     response = requests.get(url)
     data = response.json()
     
