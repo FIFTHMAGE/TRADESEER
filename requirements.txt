@@ -14,5 +14,19 @@ web3==6.15.1
 # Telegram bot library (not used in webhook version but kept for compatibility)
 python-telegram-bot==20.7
 
+# Wallet connection and token swapping
+eth-account==0.9.0
+eth-utils==2.3.0
+eth-typing==3.5.0
+eth-hash==0.5.2
+eth-keyfile==0.6.1
+eth-keys==0.4.0
+
+# Cryptography for secure key management
+cryptography==41.0.7
+
+# JSON-RPC for blockchain interactions
+json-rpc==1.13.1
+
 # Note: SQLite3 is included in Python standard library - no additional install needed
 # Database: SQLite3 (built-in) for persistent wallet tracking storage 

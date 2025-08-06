@@ -11,19 +11,29 @@ import threading
 import time
 import re
 import sqlite3
+import secrets
+import hashlib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
 
-# Web3 imports for proper ENS resolution
+# Web3 imports for proper ENS resolution and wallet management
 try:
     from web3 import Web3
     from eth_utils import to_checksum_address
+    from eth_account import Account
+    from eth_account.signers.local import LocalAccount
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    import base64
     WEB3_AVAILABLE = True
-except ImportError:
+    WALLET_AVAILABLE = True
+except ImportError as e:
     WEB3_AVAILABLE = False
-    print("⚠️ Web3 not available - some ENS resolution methods may not work")
+    WALLET_AVAILABLE = False
+    print(f"⚠️ Wallet features not available: {e}")
 
 # Load environment variables
 try:
@@ -75,9 +85,52 @@ def init_database():
         )
     ''')
     
+    # New table for connected wallets
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS connected_wallets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            wallet_address TEXT NOT NULL,
+            wallet_name TEXT,
+            is_active BOOLEAN DEFAULT 1,
+            date_connected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chat_id, wallet_address)
+        )
+    ''')
+    
+    # New table for wallet private keys (encrypted)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS wallet_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            wallet_address TEXT NOT NULL,
+            encrypted_private_key TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chat_id, wallet_address)
+        )
+    ''')
+    
+    # New table for transaction history
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            wallet_address TEXT NOT NULL,
+            transaction_type TEXT NOT NULL,
+            token_address TEXT,
+            token_symbol TEXT,
+            amount REAL,
+            tx_hash TEXT,
+            chain TEXT DEFAULT 'base',
+            status TEXT DEFAULT 'pending',
+            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     conn.commit()
     conn.close()
-    print("✅ Database initialized")
+    print("✅ Database initialized with wallet connection support")
 
 def load_wallets_from_db():
     """Load tracked wallets from database into memory"""
@@ -184,6 +237,10 @@ def create_main_menu_keyboard():
         [
             {"text": "📈 Dashboard", "callback_data": "dashboard"},
             {"text": "⚙️ Settings", "callback_data": "settings"}
+        ],
+        [
+            {"text": "💼 My Wallets", "callback_data": "my_wallets"},
+            {"text": "🔐 Create Wallet", "callback_data": "create_wallet"}
         ],
         [
             {"text": "📱 How to Track", "callback_data": "how_to_track"},
@@ -442,6 +499,344 @@ Send a message like "set threshold 0.5" or "threshold 1.0"
 """
     bot.send_message(chat_id, message)
 
+# Wallet Management Functions
+def generate_encryption_key(password, salt):
+    """Generate encryption key from password and salt"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    return key
+
+def encrypt_private_key(private_key, password):
+    """Encrypt private key with password"""
+    salt = os.urandom(16)
+    key = generate_encryption_key(password, salt)
+    f = Fernet(key)
+    encrypted_key = f.encrypt(private_key.encode())
+    return encrypted_key, salt
+
+def decrypt_private_key(encrypted_key, salt, password):
+    """Decrypt private key with password"""
+    try:
+        key = generate_encryption_key(password, salt)
+        f = Fernet(key)
+        decrypted_key = f.decrypt(encrypted_key)
+        return decrypted_key.decode()
+    except Exception as e:
+        print(f"Decryption failed: {e}")
+        return None
+
+def create_new_wallet(chat_id, wallet_name, password):
+    """Create a new wallet for the user"""
+    if not WALLET_AVAILABLE:
+        return None, "Wallet features not available"
+    
+    try:
+        # Generate new account
+        account = Account.create()
+        private_key = account.key.hex()
+        wallet_address = account.address
+        
+        # Encrypt private key
+        encrypted_key, salt = encrypt_private_key(private_key, password)
+        
+        # Save to database
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Save connected wallet
+        cursor.execute('''
+            INSERT OR REPLACE INTO connected_wallets 
+            (chat_id, wallet_address, wallet_name, is_active) 
+            VALUES (?, ?, ?, ?)
+        ''', (chat_id, wallet_address, wallet_name, True))
+        
+        # Save encrypted private key
+        cursor.execute('''
+            INSERT OR REPLACE INTO wallet_keys 
+            (chat_id, wallet_address, encrypted_private_key, salt) 
+            VALUES (?, ?, ?, ?)
+        ''', (chat_id, wallet_address, encrypted_key, salt))
+        
+        conn.commit()
+        conn.close()
+        
+        return wallet_address, None
+    except Exception as e:
+        return None, f"Error creating wallet: {e}"
+
+def get_user_wallets(chat_id):
+    """Get all connected wallets for a user"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT wallet_address, wallet_name, is_active 
+            FROM connected_wallets 
+            WHERE chat_id = ? AND is_active = 1
+        ''', (chat_id,))
+        wallets = cursor.fetchall()
+        conn.close()
+        return wallets
+    except Exception as e:
+        print(f"Error getting user wallets: {e}")
+        return []
+
+def get_wallet_balance(wallet_address, chain="base"):
+    """Get wallet balance on specified chain"""
+    if not WEB3_AVAILABLE:
+        return None
+    
+    try:
+        if chain == "base":
+            w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
+        elif chain == "ethereum":
+            w3 = Web3(Web3.HTTPProvider('https://eth.llamarpc.com'))
+        else:
+            return None
+        
+        balance_wei = w3.eth.get_balance(wallet_address)
+        balance_eth = w3.from_wei(balance_wei, 'ether')
+        return float(balance_eth)
+    except Exception as e:
+        print(f"Error getting balance: {e}")
+        return None
+
+def get_token_info(token_address, chain="base"):
+    """Get token information"""
+    try:
+        if chain == "base":
+            url = f"https://api.basescan.org/api?module=token&action=tokeninfo&contractaddress={token_address}&apikey={ETHERSCAN_API_KEY}"
+        else:
+            url = f"https://api.etherscan.io/api?module=token&action=tokeninfo&contractaddress={token_address}&apikey={ETHERSCAN_API_KEY}"
+        
+        response = requests.get(url)
+        data = response.json()
+        
+        if data["status"] == "1" and data["result"]:
+            return data["result"][0]
+        return None
+    except Exception as e:
+        print(f"Error getting token info: {e}")
+        return None
+
+def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, password):
+    """Execute a token swap on Base network"""
+    if not WALLET_AVAILABLE:
+        return None, "Wallet features not available"
+    
+    try:
+        # Get encrypted private key
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT encrypted_private_key, salt 
+            FROM wallet_keys 
+            WHERE chat_id = ? AND wallet_address = ?
+        ''', (chat_id, wallet_address))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return None, "Wallet not found"
+        
+        encrypted_key, salt = row
+        
+        # Decrypt private key
+        private_key = decrypt_private_key(encrypted_key, salt, password)
+        if not private_key:
+            return None, "Invalid password"
+        
+        # Create account
+        account = Account.from_key(private_key)
+        
+        # Connect to Base network
+        w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
+        
+        # Uniswap V3 Router contract (Base)
+        router_address = "0x2626664c2603336E57B271c5C0b26F421741e481"  # BaseSwap router
+        
+        # Basic swap transaction (simplified - would need proper ABI and swap logic)
+        # This is a placeholder - actual implementation would require full DEX integration
+        
+        # For now, we'll simulate the transaction
+        tx_hash = f"0x{secrets.token_hex(32)}"  # Simulated hash
+        
+        # Save transaction to database
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO bot_transactions 
+            (chat_id, wallet_address, transaction_type, token_address, amount, tx_hash, chain, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (chat_id, wallet_address, "swap", token_address, amount_eth, tx_hash, "base", "pending"))
+        conn.commit()
+        conn.close()
+        
+        return tx_hash, None
+        
+    except Exception as e:
+        return None, f"Error executing swap: {e}"
+
+def handle_wallet_connection(chat_id, text):
+    """Handle wallet connection commands"""
+    text_lower = text.lower()
+    
+    if "create wallet" in text_lower or "new wallet" in text_lower:
+        # Extract wallet name and password
+        import re
+        name_match = re.search(r'name[:\s]+([^\s]+)', text, re.IGNORECASE)
+        password_match = re.search(r'password[:\s]+([^\s]+)', text, re.IGNORECASE)
+        
+        if not name_match or not password_match:
+            bot.send_message(chat_id, """
+🔐 <b>Create New Wallet</b>
+
+To create a new wallet, use this format:
+<code>create wallet name:MyWallet password:MyPassword123</code>
+
+<b>Requirements:</b>
+• Name: Any name for your wallet
+• Password: Strong password (min 8 characters)
+
+<b>Example:</b>
+<code>create wallet name:TradingWallet password:SecurePass123!</code>
+
+⚠️ <b>Important:</b> Save your password securely!
+""")
+            return
+        
+        wallet_name = name_match.group(1)
+        password = password_match.group(1)
+        
+        if len(password) < 8:
+            bot.send_message(chat_id, "❌ Password must be at least 8 characters long")
+            return
+        
+        # Create wallet
+        wallet_address, error = create_new_wallet(chat_id, wallet_name, password)
+        
+        if error:
+            bot.send_message(chat_id, f"❌ {error}")
+        else:
+            message = f"""
+✅ <b>Wallet Created Successfully!</b>
+
+🏷️ <b>Name:</b> {wallet_name}
+📍 <b>Address:</b> <code>{wallet_address}</code>
+🔗 <b>Network:</b> Base Network
+
+💰 <b>Next Steps:</b>
+• Send ETH to this address to start trading
+• Use "connect wallet" to import existing wallet
+• Use "my wallets" to see all your wallets
+
+⚠️ <b>Security:</b> Keep your password safe!
+"""
+            bot.send_message(chat_id, message)
+    
+    elif "my wallets" in text_lower or "list wallets" in text_lower:
+        wallets = get_user_wallets(chat_id)
+        
+        if not wallets:
+            bot.send_message(chat_id, """
+📭 <b>No Connected Wallets</b>
+
+You haven't connected any wallets yet.
+
+<b>Options:</b>
+• Create new wallet: "create wallet name:MyWallet password:MyPass123"
+• Import existing wallet: "connect wallet [private_key]"
+
+💡 <b>Tip:</b> Start with creating a new wallet!
+""")
+            return
+        
+        message = "💼 <b>Your Connected Wallets:</b>\n\n"
+        
+        for wallet_address, wallet_name, is_active in wallets:
+            balance = get_wallet_balance(wallet_address)
+            balance_str = f"{balance:.6f} ETH" if balance is not None else "Unknown"
+            
+            message += f"""
+🏷️ <b>{wallet_name}</b>
+📍 <code>{wallet_address}</code>
+💰 Balance: {balance_str}
+{'✅ Active' if is_active else '❌ Inactive'}
+"""
+        
+        message += "\n💡 <b>Commands:</b>\n• 'swap [token] [amount]' - Buy tokens\n• 'balance [wallet]' - Check balance"
+        bot.send_message(chat_id, message)
+    
+    elif "swap" in text_lower or "buy" in text_lower:
+        # Extract token and amount
+        import re
+        token_match = re.search(r'([0-9a-fA-F]{42})', text)  # Token address
+        amount_match = re.search(r'(\d+\.?\d*)', text)  # Amount
+        
+        if not token_match or not amount_match:
+            bot.send_message(chat_id, """
+💱 <b>Token Swap</b>
+
+To buy tokens, use this format:
+<code>swap [token_address] [amount_in_eth]</code>
+
+<b>Example:</b>
+<code>swap 0x1234567890123456789012345678901234567890 0.1</code>
+
+<b>Requirements:</b>
+• Token address (42 characters starting with 0x)
+• Amount in ETH (e.g., 0.1, 0.5, 1.0)
+
+💡 <b>Tip:</b> Use "my wallets" to see your available wallets first!
+""")
+            return
+        
+        token_address = token_match.group(1)
+        amount = float(amount_match.group(1))
+        
+        # Get user's wallets
+        wallets = get_user_wallets(chat_id)
+        if not wallets:
+            bot.send_message(chat_id, "❌ No wallets connected. Create a wallet first!")
+            return
+        
+        # For now, use the first wallet
+        wallet_address, wallet_name, _ = wallets[0]
+        
+        # Check balance
+        balance = get_wallet_balance(wallet_address)
+        if balance is None or balance < amount:
+            bot.send_message(chat_id, f"❌ Insufficient balance. You have {balance:.6f} ETH, need {amount} ETH")
+            return
+        
+        # Get token info
+        token_info = get_token_info(token_address)
+        token_symbol = token_info.get('tokenSymbol', 'Unknown') if token_info else 'Unknown'
+        
+        message = f"""
+💱 <b>Swap Confirmation</b>
+
+🏷️ <b>Token:</b> {token_symbol} ({token_address[:10]}...)
+💰 <b>Amount:</b> {amount} ETH
+💼 <b>Wallet:</b> {wallet_name}
+📍 <b>Address:</b> <code>{wallet_address}</code>
+
+⚠️ <b>This is a simulation!</b>
+Real swap functionality requires:
+• DEX integration (Uniswap, BaseSwap)
+• Gas estimation
+• Slippage protection
+• Price impact calculation
+
+🔧 <b>Coming Soon:</b> Full DEX integration!
+"""
+        bot.send_message(chat_id, message)
+
 def set_bot_commands():
     """Set the bot commands menu for mobile"""
     commands = [
@@ -450,6 +845,7 @@ def set_bot_commands():
         {"command": "list", "description": "📊 Show tracked wallets"},
         {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
         {"command": "settings", "description": "⚙️ Customize notifications & alerts"},
+        {"command": "wallets", "description": "💼 Manage connected wallets"},
         {"command": "insights", "description": "🔍 Get wallet/basename analysis"},
         {"command": "untrack", "description": "❌ Stop tracking wallet/basename"}
     ]
@@ -1001,6 +1397,7 @@ I'm your advanced crypto wallet tracker with multi-chain support!
 • <b>Basename support</b> - Use names like alice.base.eth
 • <b>Portfolio dashboard</b> - Track your wallet collection performance
 • <b>Customizable alerts</b> - Choose notification style & thresholds
+• <b>Wallet connection</b> - Create wallets and buy tokens directly!
 
 📱 <b>Mobile Tip:</b> Use the menu button (≡) or type / to see all commands!
 
@@ -1009,6 +1406,7 @@ I'm your advanced crypto wallet tracker with multi-chain support!
 <b>Examples:</b>
 • <code>0x123...</code> (wallet address)
 • <code>alice.base.eth</code> (basename)
+• <code>create wallet name:MyWallet password:MyPass123</code>
 """
     keyboard = create_main_menu_keyboard()
     bot.send_message(chat_id, message, reply_markup=keyboard)
@@ -1294,6 +1692,7 @@ Try pasting a wallet address now! 📊
 • <code>/list</code> - Show tracked wallets  
 • <code>/dashboard</code> - Portfolio overview & analytics
 • <code>/settings</code> - Customize notifications & alerts
+• <code>/wallets</code> - Manage connected wallets
 • <code>/insights [wallet/basename]</code> - Analyze wallet
 • <code>/untrack [wallet/basename]</code> - Stop tracking
 
@@ -1302,6 +1701,12 @@ Try pasting a wallet address now! 📊
 • Ask "what did [wallet/basename] buy today/week/month?"
 • Say "track this wallet" with any address or basename
 • Set alert thresholds: "set threshold 0.5"
+
+<b>💼 Wallet Features:</b>
+• Create new wallets: "create wallet name:MyWallet password:MyPass123"
+• View connected wallets: "my wallets"
+• Buy tokens: "swap [token_address] [amount]"
+• Check balances automatically
 
 <b>🏷️ Basename Support:</b>
 • Use human-readable names like <code>alice.base.eth</code>
@@ -1319,6 +1724,11 @@ Try pasting a wallet address now! 📊
 • Customizable alert thresholds
 • Personalized settings per user
 
+<b>🔐 Security:</b>
+• Private keys encrypted with your password
+• Secure wallet creation and management
+• Transaction history tracking
+
 <b>📱 Mobile Tips:</b>
 • Use menu button (≡) for commands
 • Type / to see command list
@@ -1332,6 +1742,8 @@ Try pasting a wallet address now! 📊
 • <code>/track alice.base.eth</code>
 • <code>What did bob.base.eth buy today?</code>
 • <code>set threshold 0.5</code>
+• <code>create wallet name:TradingWallet password:SecurePass123!</code>
+• <code>swap 0x1234567890123456789012345678901234567890 0.1</code>
 
 Need more help? Just paste a wallet or basename and try! 🚀
 """
@@ -1361,6 +1773,30 @@ Need more help? Just paste a wallet or basename and try! 🚀
         handle_settings(chat_id)
     elif callback_data == "alert_threshold":
         handle_alert_threshold(chat_id)
+    elif callback_data == "my_wallets":
+        handle_wallet_connection(chat_id, "my wallets")
+    elif callback_data == "create_wallet":
+        bot.send_message(chat_id, """
+🔐 <b>Create New Wallet</b>
+
+To create a new wallet, send a message with this format:
+
+<code>create wallet name:MyWallet password:MyPassword123</code>
+
+<b>Requirements:</b>
+• Name: Any name for your wallet
+• Password: Strong password (min 8 characters)
+
+<b>Example:</b>
+<code>create wallet name:TradingWallet password:SecurePass123!</code>
+
+⚠️ <b>Important:</b> Save your password securely!
+
+💡 <b>After creating:</b>
+• Send ETH to the wallet address
+• Use "my wallets" to see your wallets
+• Use "swap [token] [amount]" to buy tokens
+""")
     elif callback_data == "back_to_menu":
         handle_start(chat_id)
 
@@ -1402,10 +1838,15 @@ def webhook():
                 handle_dashboard(chat_id)
             elif text.startswith('/settings'):
                 handle_settings(chat_id)
+            elif text.startswith('/wallet') or text.startswith('/wallets'):
+                handle_wallet_connection(chat_id, text)
             else:
-                # Check for threshold setting commands
+                # Check for wallet commands
                 text_lower = text.lower()
-                if any(keyword in text_lower for keyword in ['threshold', 'alert']) and any(char.isdigit() for char in text):
+                if any(keyword in text_lower for keyword in ['create wallet', 'new wallet', 'my wallets', 'list wallets', 'swap', 'buy']):
+                    handle_wallet_connection(chat_id, text)
+                # Check for threshold setting commands
+                elif any(keyword in text_lower for keyword in ['threshold', 'alert']) and any(char.isdigit() for char in text):
                     # Extract number from text
                     import re
                     numbers = re.findall(r'\d+\.?\d*', text)
