@@ -1,4 +1,15 @@
-python-telegram-bot==20.7
+# TradeSeer Bot Dependencies
+# Core web framework for webhook handling
+flask==2.3.3
+
+# HTTP requests for API calls (Etherscan, Basescan)
 requests==2.31.0
+
+# Environment variable management
 python-dotenv==1.0.0
-flask==2.3.3 
+
+# Telegram bot library (not used in webhook version but kept for compatibility)
+python-telegram-bot==20.7
+
+# Note: SQLite3 is included in Python standard library - no additional install needed
+# Database: SQLite3 (built-in) for persistent wallet tracking storage 

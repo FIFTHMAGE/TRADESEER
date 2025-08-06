@@ -10,6 +10,7 @@ import requests
 import threading
 import time
 import re
+import sqlite3
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -36,6 +37,89 @@ if not ETHERSCAN_API_KEY:
 user_wallets = {}
 user_settings = {}
 running = True
+
+# Database setup
+DB_FILE = 'tradeseer_bot.db'
+
+def init_database():
+    """Initialize SQLite database for persistent storage"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # Create tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tracked_wallets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            wallet_address TEXT NOT NULL,
+            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chat_id, wallet_address)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_settings (
+            chat_id INTEGER PRIMARY KEY,
+            alert_threshold REAL DEFAULT 0.2,
+            notification_style TEXT DEFAULT 'default',
+            auto_score BOOLEAN DEFAULT 1
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print("✅ Database initialized")
+
+def load_wallets_from_db():
+    """Load tracked wallets from database into memory"""
+    global user_wallets
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT chat_id, wallet_address FROM tracked_wallets')
+        rows = cursor.fetchall()
+        
+        user_wallets = {}
+        for chat_id, wallet_address in rows:
+            if chat_id not in user_wallets:
+                user_wallets[chat_id] = []
+            user_wallets[chat_id].append(wallet_address)
+        
+        total_wallets = sum(len(wallets) for wallets in user_wallets.values())
+        print(f"✅ Loaded {total_wallets} wallets for {len(user_wallets)} users from database")
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error loading wallets from database: {e}")
+
+def save_wallet_to_db(chat_id, wallet_address):
+    """Save a wallet to the database"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT OR IGNORE INTO tracked_wallets (chat_id, wallet_address) VALUES (?, ?)',
+            (chat_id, wallet_address)
+        )
+        conn.commit()
+        conn.close()
+        print(f"✅ Saved wallet {wallet_address} for user {chat_id} to database")
+    except Exception as e:
+        print(f"❌ Error saving wallet to database: {e}")
+
+def remove_wallet_from_db(chat_id, wallet_address):
+    """Remove a wallet from the database"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            'DELETE FROM tracked_wallets WHERE chat_id = ? AND wallet_address = ?',
+            (chat_id, wallet_address.lower())
+        )
+        conn.commit()
+        conn.close()
+        print(f"✅ Removed wallet {wallet_address} for user {chat_id} from database")
+    except Exception as e:
+        print(f"❌ Error removing wallet from database: {e}")
 
 # Flask app
 app = Flask(__name__)
@@ -98,10 +182,10 @@ def set_bot_commands():
     """Set the bot commands menu for mobile"""
     commands = [
         {"command": "start", "description": "🔮 Start TradeSeer - Main menu"},
-        {"command": "track", "description": "📈 Track a wallet address"},
+        {"command": "track", "description": "📈 Track wallet address or basename"},
         {"command": "list", "description": "📊 Show tracked wallets"},
-        {"command": "insights", "description": "🔍 Get wallet analysis"},
-        {"command": "untrack", "description": "❌ Stop tracking wallet"}
+        {"command": "insights", "description": "🔍 Get wallet/basename analysis"},
+        {"command": "untrack", "description": "❌ Stop tracking wallet/basename"}
     ]
     
     try:
@@ -115,6 +199,84 @@ def is_wallet_address(text):
     pattern = r'\b0x[a-fA-F0-9]{40}\b'
     match = re.search(pattern, text)
     return match.group() if match else None
+
+def is_basename(text):
+    """Check if text contains a valid basename (e.g., name.base.eth)"""
+    pattern = r'\b[\w\-]+\.base\.eth\b'
+    match = re.search(pattern, text, re.IGNORECASE)
+    return match.group().lower() if match else None
+
+def resolve_basename_to_address(basename):
+    """Resolve a basename to wallet address using ENS resolution"""
+    try:
+        # Method 1: Use ENS.domains API (most reliable)
+        url = f"https://ens.domains/api/resolve/{basename}"
+        headers = {
+            'User-Agent': 'TradeSeer-Bot/1.0',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Look for ETH address in records
+            if data.get('records') and data['records'].get('ETH'):
+                address = data['records']['ETH']
+                print(f"✅ Resolved {basename} to {address}")
+                return address
+            elif data.get('address'):
+                address = data['address']
+                print(f"✅ Resolved {basename} to {address}")
+                return address
+        
+        # Method 2: Try ENS API directly
+        ens_api_url = f"https://api.ens.domains/v1/name/{basename}"
+        ens_response = requests.get(ens_api_url, headers=headers, timeout=15)
+        
+        if ens_response.status_code == 200:
+            ens_data = ens_response.json()
+            if ens_data.get('records', {}).get('ETH'):
+                address = ens_data['records']['ETH']
+                print(f"✅ Resolved {basename} to {address} (ENS API)")
+                return address
+        
+        # Method 3: Try Universal Resolver
+        # This uses ENS's universal resolver which supports .base.eth
+        resolver_url = f"https://universal-resolver.ens.domains/resolve/{basename}"
+        resolver_response = requests.get(resolver_url, headers=headers, timeout=15)
+        
+        if resolver_response.status_code == 200:
+            resolver_data = resolver_response.json()
+            if resolver_data.get('data') and resolver_data['data'].get('address'):
+                address = resolver_data['data']['address']
+                print(f"✅ Resolved {basename} to {address} (Universal Resolver)")
+                return address
+        
+        print(f"❌ Could not resolve basename: {basename}")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error resolving basename {basename}: {e}")
+        return None
+
+def extract_wallet_or_basename(text):
+    """Extract wallet address or basename from text and return resolved address"""
+    # First check for direct wallet address
+    wallet_address = is_wallet_address(text)
+    if wallet_address:
+        return wallet_address, "address"
+    
+    # Then check for basename
+    basename = is_basename(text)
+    if basename:
+        resolved_address = resolve_basename_to_address(basename)
+        if resolved_address:
+            return resolved_address, "basename"
+        else:
+            return None, "basename_failed"
+    
+    return None, "none"
 
 def get_token_transfers(wallet_address, chain, days=1):
     """Get token transfers for a wallet in the last X days"""
@@ -423,22 +585,37 @@ def handle_start(chat_id):
 I'm your advanced crypto wallet tracker with multi-chain support!
 
 🎯 <b>Smart Features:</b>
-• <b>Auto-detect wallets</b> - Just paste any wallet address!
+• <b>Auto-detect wallets & basenames</b> - Just paste any address or basename!
 • <b>Natural language</b> - Ask "what did this wallet buy today?"
 • <b>Multi-chain tracking</b> - Ethereum + Base networks
 • <b>Real-time alerts</b> - Get notified of new transactions
+• <b>Basename support</b> - Use names like alice.base.eth
 
 📱 <b>Mobile Tip:</b> Use the menu button (≡) or type / to see all commands!
 
-<b>Try pasting a wallet address or use the buttons below:</b> ✨
+<b>Try pasting a wallet address, basename, or use the buttons below:</b> ✨
+
+<b>Examples:</b>
+• <code>0x123...</code> (wallet address)
+• <code>alice.base.eth</code> (basename)
 """
     keyboard = create_main_menu_keyboard()
     bot.send_message(chat_id, message, reply_markup=keyboard)
 
-def handle_track(chat_id, wallet_address):
-    """Handle wallet tracking"""
+def handle_track(chat_id, wallet_input):
+    """Handle wallet tracking - supports both addresses and basenames"""
+    if not wallet_input:
+        bot.send_message(chat_id, "❌ Please provide a wallet address or basename\n\nExamples:\n• <code>/track 0x123...</code>\n• <code>/track alice.base.eth</code>")
+        return
+    
+    # Resolve address or basename
+    wallet_address, input_type = extract_wallet_or_basename(wallet_input)
+    
     if not wallet_address:
-        bot.send_message(chat_id, "❌ Please provide a wallet address\n\nExample: <code>/track 0x123...</code>")
+        if input_type == "basename_failed":
+            bot.send_message(chat_id, f"❌ Could not resolve basename: <code>{wallet_input}</code>\n\nPlease check the basename exists or try a wallet address instead.")
+        else:
+            bot.send_message(chat_id, f"❌ Invalid input: <code>{wallet_input}</code>\n\nPlease provide:\n• A wallet address (0x...)\n• A basename (name.base.eth)")
         return
     
     # Initialize user if not exists
@@ -450,13 +627,19 @@ def handle_track(chat_id, wallet_address):
         bot.send_message(chat_id, f"⚠️ Already tracking: <code>{wallet_address}</code>")
         return
     
-    # Add wallet
+    # Add wallet to memory and database
     user_wallets[chat_id].append(wallet_address)
+    save_wallet_to_db(chat_id, wallet_address)
     
     # Get initial insights
     insights = get_wallet_insights(wallet_address)
     
-    message = f"✅ <b>Now tracking wallet!</b>\n\n{insights}"
+    # Create success message with input type info
+    if input_type == "basename":
+        message = f"✅ <b>Now tracking basename!</b>\n\n🏷️ <b>Basename:</b> <code>{wallet_input}</code>\n📍 <b>Resolved to:</b> <code>{wallet_address}</code>\n\n{insights}"
+    else:
+        message = f"✅ <b>Now tracking wallet!</b>\n\n{insights}"
+    
     bot.send_message(chat_id, message)
 
 def handle_list(chat_id):
@@ -472,40 +655,75 @@ def handle_list(chat_id):
     
     bot.send_message(chat_id, message)
 
-def handle_untrack(chat_id, wallet_address):
-    """Handle untracking a wallet"""
-    if not wallet_address:
-        bot.send_message(chat_id, "❌ Please provide a wallet address\n\nExample: <code>/untrack 0x123...</code>")
+def handle_untrack(chat_id, wallet_input):
+    """Handle untracking a wallet - supports both addresses and basenames"""
+    if not wallet_input:
+        bot.send_message(chat_id, "❌ Please provide a wallet address or basename\n\nExamples:\n• <code>/untrack 0x123...</code>\n• <code>/untrack alice.base.eth</code>")
         return
     
     if chat_id not in user_wallets or not user_wallets[chat_id]:
         bot.send_message(chat_id, "📭 You're not tracking any wallets")
         return
     
-    # Find and remove wallet
+    # Resolve address or basename
+    wallet_address, input_type = extract_wallet_or_basename(wallet_input)
+    
+    if not wallet_address:
+        if input_type == "basename_failed":
+            bot.send_message(chat_id, f"❌ Could not resolve basename: <code>{wallet_input}</code>")
+        else:
+            bot.send_message(chat_id, f"❌ Invalid input: <code>{wallet_input}</code>")
+        return
+    
+    # Find and remove wallet from memory and database
     for wallet in user_wallets[chat_id]:
         if wallet.lower() == wallet_address.lower():
             user_wallets[chat_id].remove(wallet)
-            bot.send_message(chat_id, f"✅ Stopped tracking wallet: <code>{wallet}</code>")
+            remove_wallet_from_db(chat_id, wallet_address)
+            if input_type == "basename":
+                bot.send_message(chat_id, f"✅ Stopped tracking basename: <code>{wallet_input}</code>\n📍 Address: <code>{wallet_address}</code>")
+            else:
+                bot.send_message(chat_id, f"✅ Stopped tracking wallet: <code>{wallet}</code>")
             return
     
     bot.send_message(chat_id, "❌ Wallet not found in your tracking list")
 
-def handle_insights(chat_id, wallet_address):
-    """Handle wallet insights request"""
+def handle_insights(chat_id, wallet_input):
+    """Handle wallet insights request - supports both addresses and basenames"""
+    if not wallet_input:
+        bot.send_message(chat_id, "❌ Please provide a wallet address or basename\n\nExamples:\n• <code>/insights 0x123...</code>\n• <code>/insights alice.base.eth</code>")
+        return
+    
+    # Resolve address or basename
+    wallet_address, input_type = extract_wallet_or_basename(wallet_input)
+    
     if not wallet_address:
-        bot.send_message(chat_id, "❌ Please provide a wallet address\n\nExample: <code>/insights 0x123...</code>")
+        if input_type == "basename_failed":
+            bot.send_message(chat_id, f"❌ Could not resolve basename: <code>{wallet_input}</code>")
+        else:
+            bot.send_message(chat_id, f"❌ Invalid input: <code>{wallet_input}</code>")
         return
     
     insights = get_wallet_insights(wallet_address)
+    
+    # Add basename info if applicable
+    if input_type == "basename":
+        basename_info = f"🏷️ <b>Basename:</b> <code>{wallet_input}</code>\n📍 <b>Address:</b> <code>{wallet_address}</code>\n\n"
+        insights = basename_info + insights
+    
     bot.send_message(chat_id, insights)
 
 def handle_purchases(chat_id, text):
-    """Handle purchase analysis commands"""
-    # Extract wallet address
-    wallet_address = is_wallet_address(text)
+    """Handle purchase analysis commands - supports both addresses and basenames"""
+    # Extract wallet address or basename
+    wallet_address, input_type = extract_wallet_or_basename(text)
+    
     if not wallet_address:
-        bot.send_message(chat_id, "❌ Please include a wallet address in your message\n\nExample: 'What did 0x123... buy today?'")
+        if input_type == "basename_failed":
+            basename = is_basename(text)
+            bot.send_message(chat_id, f"❌ Could not resolve basename: <code>{basename}</code>")
+        else:
+            bot.send_message(chat_id, "❌ Please include a wallet address or basename in your message\n\nExamples:\n• 'What did 0x123... buy today?'\n• 'What did alice.base.eth buy today?'")
         return
     
     # Determine time period
@@ -571,37 +789,44 @@ def handle_purchases(chat_id, text):
     bot.send_message(chat_id, message)
 
 def handle_auto_track(chat_id, text):
-    """Handle automatic wallet tracking from any message"""
-    wallet_address = is_wallet_address(text)
-    if wallet_address:
+    """Handle automatic wallet tracking from any message - supports both addresses and basenames"""
+    wallet_address, input_type = extract_wallet_or_basename(text)
+    original_input = is_wallet_address(text) or is_basename(text)
+    
+    if wallet_address and original_input:
         track_keywords = ["track", "monitor", "watch", "follow", "add"]
         analysis_keywords = ["bought", "purchases", "tokens", "coins", "what did", "analyze"]
         
         text_lower = text.lower()
         
         if any(keyword in text_lower for keyword in track_keywords):
-            handle_track(chat_id, wallet_address)
+            handle_track(chat_id, original_input)
         elif any(keyword in text_lower for keyword in analysis_keywords):
             handle_purchases(chat_id, text)
         else:
-            # Offer options
+            # Offer options with basename support
+            input_type_label = "basename" if input_type == "basename" else "wallet address"
             message = f"""
-🔍 <b>Detected wallet address!</b>
+🔍 <b>Detected {input_type_label}!</b>
 
-<code>{wallet_address}</code>
+{f"🏷️ <b>Basename:</b> <code>{original_input}</code>" if input_type == "basename" else ""}
+{"📍 <b>Resolves to:</b> " if input_type == "basename" else ""}<code>{wallet_address if input_type == "basename" else original_input}</code>
 
 What would you like to do?
 
 🎯 <b>Quick Actions:</b>
-• Type "track this wallet" - Start monitoring
+• Type "track this {input_type_label}" - Start monitoring
 • Type "what did this buy today?" - See purchases  
-• Type "analyze this wallet" - Get insights
+• Type "analyze this {input_type_label}" - Get insights
 
 Or use commands:
-• <code>/track {wallet_address}</code>
-• <code>/insights {wallet_address}</code>
+• <code>/track {original_input}</code>
+• <code>/insights {original_input}</code>
 """
             bot.send_message(chat_id, message)
+    elif input_type == "basename_failed":
+        basename = is_basename(text)
+        bot.send_message(chat_id, f"❌ Could not resolve basename: <code>{basename}</code>\n\nPlease check the basename exists or try a wallet address instead.")
 
 def handle_callback_query(callback_query):
     """Handle inline keyboard button presses"""
@@ -654,15 +879,20 @@ Try pasting a wallet address now! 📊
 
 <b>🎯 Main Commands:</b>
 • <code>/start</code> - Main menu
-• <code>/track [wallet]</code> - Track wallet
+• <code>/track [wallet/basename]</code> - Track wallet
 • <code>/list</code> - Show tracked wallets  
-• <code>/insights [wallet]</code> - Analyze wallet
-• <code>/untrack [wallet]</code> - Stop tracking
+• <code>/insights [wallet/basename]</code> - Analyze wallet
+• <code>/untrack [wallet/basename]</code> - Stop tracking
 
 <b>🤖 Smart Features:</b>
-• Paste any wallet address for auto-detection
-• Ask "what did [wallet] buy today/week/month?"
-• Say "track this wallet" with any address
+• Paste any wallet address or basename for auto-detection
+• Ask "what did [wallet/basename] buy today/week/month?"
+• Say "track this wallet" with any address or basename
+
+<b>🏷️ Basename Support:</b>
+• Use human-readable names like <code>alice.base.eth</code>
+• Automatically resolves to wallet addresses
+• Works with all commands and features
 
 <b>📱 Mobile Tips:</b>
 • Use menu button (≡) for commands
@@ -673,7 +903,11 @@ Try pasting a wallet address now! 📊
 • Ethereum Mainnet
 • Base Network
 
-Need more help? Just paste a wallet and try! 🚀
+<b>Examples:</b>
+• <code>/track alice.base.eth</code>
+• <code>What did bob.base.eth buy today?</code>
+
+Need more help? Just paste a wallet or basename and try! 🚀
 """
         keyboard = create_main_menu_keyboard()
         bot.send_message(chat_id, message, reply_markup=keyboard)
@@ -713,9 +947,9 @@ def webhook():
             elif text.startswith('/purchases') or text.startswith('/bought') or text.startswith('/tokens'):
                 handle_purchases(chat_id, text)
             else:
-                # Check for auto-detection
-                wallet_address = is_wallet_address(text)
-                if wallet_address:
+                # Check for auto-detection (wallet address or basename)
+                wallet_address, input_type = extract_wallet_or_basename(text)
+                if wallet_address or input_type == "basename_failed":
                     handle_auto_track(chat_id, text)
                 else:
                     # Unknown command
@@ -725,9 +959,13 @@ def webhook():
 📱 <b>Mobile Tip:</b> Use the menu button (≡) or buttons below!
 
 💡 <b>Quick Options:</b>
-• Just paste a wallet address for auto-detection
-• Ask "what did [wallet] buy today?"
+• Just paste a wallet address or basename for auto-detection
+• Ask "what did [wallet/basename] buy today?"
 • Use the buttons below for easy access
+
+<b>Examples:</b>
+• <code>0x123...</code> (wallet address)
+• <code>alice.base.eth</code> (basename)
 
 <b>Try typing / to see all commands!</b> 📋
 """
@@ -766,6 +1004,10 @@ def home():
 
 if __name__ == '__main__':
     print("🔮 Starting TradeSeer Bot...")
+    
+    # Initialize database and load existing wallets
+    init_database()
+    load_wallets_from_db()
     
     # Set bot commands for mobile support
     set_bot_commands()
