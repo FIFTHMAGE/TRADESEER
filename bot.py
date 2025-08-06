@@ -182,10 +182,265 @@ def create_main_menu_keyboard():
             {"text": "🔍 Quick Insights", "callback_data": "quick_insights"}
         ],
         [
+            {"text": "📈 Dashboard", "callback_data": "dashboard"},
+            {"text": "⚙️ Settings", "callback_data": "settings"}
+        ],
+        [
             {"text": "📱 How to Track", "callback_data": "how_to_track"},
             {"text": "💡 Help", "callback_data": "help"}
         ]
     ])
+
+def create_settings_keyboard():
+    """Create settings menu keyboard"""
+    return create_inline_keyboard([
+        [
+            {"text": "🔮 Psychic Style", "callback_data": "style_psychic"},
+            {"text": "💼 Professional", "callback_data": "style_professional"}
+        ],
+        [
+            {"text": "🔔 Minimal", "callback_data": "style_minimal"},
+            {"text": "💰 Alert Threshold", "callback_data": "alert_threshold"}
+        ],
+        [
+            {"text": "🔙 Back to Menu", "callback_data": "back_to_menu"}
+        ]
+    ])
+
+def get_user_settings(chat_id):
+    """Get user settings from database"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT alert_threshold, notification_style, auto_score FROM user_settings WHERE chat_id = ?', (chat_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'alert_threshold': row[0],
+                'notification_style': row[1],
+                'auto_score': bool(row[2])
+            }
+        else:
+            # Return defaults if no settings found
+            return {
+                'alert_threshold': 0.2,
+                'notification_style': 'default',
+                'auto_score': True
+            }
+    except Exception as e:
+        print(f"Error getting user settings: {e}")
+        return {
+            'alert_threshold': 0.2,
+            'notification_style': 'default',
+            'auto_score': True
+        }
+
+def save_user_settings(chat_id, settings):
+    """Save user settings to database"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO user_settings 
+            (chat_id, alert_threshold, notification_style, auto_score) 
+            VALUES (?, ?, ?, ?)
+        ''', (chat_id, settings['alert_threshold'], settings['notification_style'], settings['auto_score']))
+        conn.commit()
+        conn.close()
+        print(f"✅ Saved settings for user {chat_id}")
+    except Exception as e:
+        print(f"❌ Error saving user settings: {e}")
+
+def get_dashboard_analytics(chat_id):
+    """Get comprehensive dashboard analytics for a user"""
+    if chat_id not in user_wallets or not user_wallets[chat_id]:
+        return None
+    
+    wallets = user_wallets[chat_id]
+    total_wallets = len(wallets)
+    
+    # Calculate scores and metrics
+    scores = []
+    total_volume = 0
+    active_wallets = 0
+    
+    for wallet in wallets:
+        score = get_wallet_score(wallet)
+        scores.append(score)
+        
+        # Get recent transactions for volume calculation
+        eth_transactions = get_transactions_from_chain(wallet, "ethereum")[:10]
+        base_transactions = get_transactions_from_chain(wallet, "base")[:10]
+        
+        wallet_volume = 0
+        for tx in eth_transactions + base_transactions:
+            try:
+                value_eth = float(tx["value"]) / 1e18
+                wallet_volume += value_eth
+            except (ValueError, KeyError):
+                continue
+        
+        total_volume += wallet_volume
+        
+        # Count active wallets (score > 40)
+        if score > 40:
+            active_wallets += 1
+    
+    # Calculate averages
+    avg_score = sum(scores) / len(scores) if scores else 0
+    
+    # Get top performing wallets
+    wallet_scores = list(zip(wallets, scores))
+    wallet_scores.sort(key=lambda x: x[1], reverse=True)
+    top_wallets = wallet_scores[:3]
+    
+    return {
+        'total_wallets': total_wallets,
+        'avg_score': avg_score,
+        'total_volume': total_volume,
+        'active_wallets': active_wallets,
+        'top_wallets': top_wallets,
+        'score_distribution': {
+            'high': len([s for s in scores if s >= 70]),
+            'medium': len([s for s in scores if 40 <= s < 70]),
+            'low': len([s for s in scores if s < 40])
+        }
+    }
+
+def format_notification(message, style, wallet_address, tx_data):
+    """Format notification based on user's preferred style"""
+    value = float(tx_data['value']) / 1e18
+    chain = tx_data.get('chain', 'unknown').title()
+    chain_emoji = "🔷" if chain.lower() == "base" else "⚡"
+    
+    if style == "psychic":
+        return f"""
+🔮 <b>Psychic Ping!</b> {chain_emoji}
+
+The cosmic forces have detected movement in your tracked wallet!
+
+💼 <b>Wallet:</b> <code>{wallet_address}</code>
+🔗 <b>Chain:</b> {chain}
+💰 <b>Value:</b> {value:.6f} ETH
+🔍 <b>Hash:</b> <code>{tx_data['hash']}</code>
+
+The stars align for potential trading activity! 🌟
+"""
+    elif style == "professional":
+        return f"""
+📊 <b>Wallet Activity Alert</b> {chain_emoji}
+
+A tracked wallet has received a new transaction.
+
+💼 <b>Wallet:</b> <code>{wallet_address}</code>
+🔗 <b>Network:</b> {chain}
+💰 <b>Amount:</b> {value:.6f} ETH
+🔍 <b>Transaction:</b> <code>{tx_data['hash']}</code>
+
+Monitor for potential trading activity.
+"""
+    elif style == "minimal":
+        return f"""
+🚨 {chain_emoji} <code>{wallet_address}</code>
+💰 {value:.6f} ETH | {chain}
+🔗 <code>{tx_data['hash']}</code>
+"""
+    else:  # default
+        return f"""
+🚨 <b>Wallet Activity Alert!</b> {chain_emoji}
+
+💼 <b>Wallet:</b> <code>{wallet_address}</code>
+🔗 <b>Chain:</b> {chain}
+💰 <b>Value:</b> {value:.6f} ETH
+🔍 <b>Hash:</b> <code>{tx_data['hash']}</code>
+
+📊 <b>From:</b> <code>{tx_data['from']}</code>
+📨 <b>To:</b> <code>{tx_data['to']}</code>
+"""
+
+def handle_dashboard(chat_id):
+    """Handle dashboard request"""
+    analytics = get_dashboard_analytics(chat_id)
+    
+    if not analytics:
+        bot.send_message(chat_id, "📭 You're not tracking any wallets yet!\n\nTry: <code>/track 0x123...</code>")
+        return
+    
+    message = f"""
+📊 <b>TradeSeer Dashboard</b>
+
+📈 <b>Portfolio Overview:</b>
+• Total Tracked Wallets: {analytics['total_wallets']}
+• Average Score: {analytics['avg_score']:.1f}/100
+• Total Volume: {analytics['total_volume']:.4f} ETH
+• Active Wallets: {analytics['active_wallets']}
+
+📊 <b>Score Distribution:</b>
+• 🚀 High (70-100): {analytics['score_distribution']['high']} wallets
+• 📈 Medium (40-69): {analytics['score_distribution']['medium']} wallets  
+• ⚠️ Low (0-39): {analytics['score_distribution']['low']} wallets
+
+🏆 <b>Top Performing Wallets:</b>
+"""
+    
+    for i, (wallet, score) in enumerate(analytics['top_wallets'], 1):
+        short_wallet = wallet[:10] + "..." + wallet[-6:]
+        message += f"{i}. <code>{short_wallet}</code> - {score}/100\n"
+    
+    message += "\n💡 <i>Tip: Higher scores indicate more active and successful wallets</i>"
+    
+    bot.send_message(chat_id, message)
+
+def handle_settings(chat_id):
+    """Handle settings menu"""
+    settings = get_user_settings(chat_id)
+    
+    style_names = {
+        'default': 'Default',
+        'psychic': '🔮 Psychic',
+        'professional': '💼 Professional', 
+        'minimal': '🔔 Minimal'
+    }
+    
+    current_style = style_names.get(settings['notification_style'], 'Default')
+    
+    message = f"""
+⚙️ <b>TradeSeer Settings</b>
+
+🔔 <b>Notification Style:</b> {current_style}
+💰 <b>Alert Threshold:</b> {settings['alert_threshold']} ETH
+📊 <b>Auto Score:</b> {'✅ On' if settings['auto_score'] else '❌ Off'}
+
+Choose an option below to customize:
+"""
+    
+    keyboard = create_settings_keyboard()
+    bot.send_message(chat_id, message, reply_markup=keyboard)
+
+def handle_alert_threshold(chat_id):
+    """Handle alert threshold setting"""
+    settings = get_user_settings(chat_id)
+    current_threshold = settings['alert_threshold']
+    
+    message = f"""
+💰 <b>Alert Threshold Setting</b>
+
+Set the minimum ETH amount that triggers alerts.
+
+<b>Current Options:</b>
+• 0.1 ETH - Very sensitive (many alerts)
+• 0.2 ETH - Balanced (recommended)
+• 0.5 ETH - Less sensitive
+• 1.0 ETH - Only large transactions
+
+<b>To change:</b>
+Send a message like "set threshold 0.5" or "threshold 1.0"
+
+<b>Your current threshold:</b> {current_threshold} ETH
+"""
+    bot.send_message(chat_id, message)
 
 def set_bot_commands():
     """Set the bot commands menu for mobile"""
@@ -193,6 +448,8 @@ def set_bot_commands():
         {"command": "start", "description": "🔮 Start TradeSeer - Main menu"},
         {"command": "track", "description": "📈 Track wallet address or basename"},
         {"command": "list", "description": "📊 Show tracked wallets"},
+        {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
+        {"command": "settings", "description": "⚙️ Customize notifications & alerts"},
         {"command": "insights", "description": "🔍 Get wallet/basename analysis"},
         {"command": "untrack", "description": "❌ Stop tracking wallet/basename"}
     ]
@@ -703,26 +960,22 @@ def monitor_wallets():
     while running:
         try:
             for user_id, wallets in user_wallets.items():
+                # Get user settings
+                user_settings = get_user_settings(user_id)
+                alert_threshold = user_settings['alert_threshold']
+                notification_style = user_settings['notification_style']
+                
                 for wallet in wallets:
                     has_activity, tx_data = check_wallet_activity(wallet)
                     
                     if has_activity and tx_data:
-                        value = tx_data['value']
-                        chain = tx_data.get('chain', 'unknown').title()
-                        chain_emoji = "🔷" if chain.lower() == "base" else "⚡"
-                        message = f"""
-🚨 <b>Wallet Activity Alert!</b> {chain_emoji}
-
-💼 <b>Wallet:</b> <code>{wallet}</code>
-🔗 <b>Chain:</b> {chain}
-💰 <b>Value:</b> {float(value)/1e18:.6f} ETH
-🔍 <b>Hash:</b> <code>{tx_data['hash']}</code>
-
-📊 <b>From:</b> <code>{tx_data['from']}</code>
-📨 <b>To:</b> <code>{tx_data['to']}</code>
-"""
-                        bot.send_message(user_id, message)
-                        print(f"Alert sent for wallet {wallet} to user {user_id}")
+                        # Check if transaction value meets user's threshold
+                        value_eth = float(tx_data['value']) / 1e18
+                        if value_eth >= alert_threshold:
+                            # Format message based on user's preferred style
+                            message = format_notification("", notification_style, wallet, tx_data)
+                            bot.send_message(user_id, message)
+                            print(f"Alert sent for wallet {wallet} to user {user_id} (threshold: {alert_threshold} ETH)")
                     
                     # Small delay between wallet checks
                     time.sleep(2)
@@ -746,6 +999,8 @@ I'm your advanced crypto wallet tracker with multi-chain support!
 • <b>Multi-chain tracking</b> - Ethereum + Base networks
 • <b>Real-time alerts</b> - Get notified of new transactions
 • <b>Basename support</b> - Use names like alice.base.eth
+• <b>Portfolio dashboard</b> - Track your wallet collection performance
+• <b>Customizable alerts</b> - Choose notification style & thresholds
 
 📱 <b>Mobile Tip:</b> Use the menu button (≡) or type / to see all commands!
 
@@ -1037,6 +1292,8 @@ Try pasting a wallet address now! 📊
 • <code>/start</code> - Main menu
 • <code>/track [wallet/basename]</code> - Track wallet
 • <code>/list</code> - Show tracked wallets  
+• <code>/dashboard</code> - Portfolio overview & analytics
+• <code>/settings</code> - Customize notifications & alerts
 • <code>/insights [wallet/basename]</code> - Analyze wallet
 • <code>/untrack [wallet/basename]</code> - Stop tracking
 
@@ -1044,11 +1301,23 @@ Try pasting a wallet address now! 📊
 • Paste any wallet address or basename for auto-detection
 • Ask "what did [wallet/basename] buy today/week/month?"
 • Say "track this wallet" with any address or basename
+• Set alert thresholds: "set threshold 0.5"
 
 <b>🏷️ Basename Support:</b>
 • Use human-readable names like <code>alice.base.eth</code>
 • Automatically resolves to wallet addresses
 • Works with all commands and features
+
+<b>📊 Dashboard Features:</b>
+• Portfolio overview with total wallets & average score
+• Score distribution analysis
+• Top performing wallets
+• Total volume tracking
+
+<b>⚙️ Customization:</b>
+• Notification styles: Psychic, Professional, Minimal
+• Customizable alert thresholds
+• Personalized settings per user
 
 <b>📱 Mobile Tips:</b>
 • Use menu button (≡) for commands
@@ -1062,11 +1331,38 @@ Try pasting a wallet address now! 📊
 <b>Examples:</b>
 • <code>/track alice.base.eth</code>
 • <code>What did bob.base.eth buy today?</code>
+• <code>set threshold 0.5</code>
 
 Need more help? Just paste a wallet or basename and try! 🚀
 """
         keyboard = create_main_menu_keyboard()
         bot.send_message(chat_id, message, reply_markup=keyboard)
+    elif callback_data == "dashboard":
+        handle_dashboard(chat_id)
+    elif callback_data == "settings":
+        handle_settings(chat_id)
+    elif callback_data == "style_psychic":
+        settings = get_user_settings(chat_id)
+        settings['notification_style'] = 'psychic'
+        save_user_settings(chat_id, settings)
+        bot.send_message(chat_id, "✅ Notification style set to 🔮 Psychic")
+        handle_settings(chat_id)
+    elif callback_data == "style_professional":
+        settings = get_user_settings(chat_id)
+        settings['notification_style'] = 'professional'
+        save_user_settings(chat_id, settings)
+        bot.send_message(chat_id, "✅ Notification style set to 💼 Professional")
+        handle_settings(chat_id)
+    elif callback_data == "style_minimal":
+        settings = get_user_settings(chat_id)
+        settings['notification_style'] = 'minimal'
+        save_user_settings(chat_id, settings)
+        bot.send_message(chat_id, "✅ Notification style set to 🔔 Minimal")
+        handle_settings(chat_id)
+    elif callback_data == "alert_threshold":
+        handle_alert_threshold(chat_id)
+    elif callback_data == "back_to_menu":
+        handle_start(chat_id)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1102,14 +1398,39 @@ def webhook():
                 handle_insights(chat_id, wallet)
             elif text.startswith('/purchases') or text.startswith('/bought') or text.startswith('/tokens'):
                 handle_purchases(chat_id, text)
+            elif text.startswith('/dashboard'):
+                handle_dashboard(chat_id)
+            elif text.startswith('/settings'):
+                handle_settings(chat_id)
             else:
-                # Check for auto-detection (wallet address or basename)
-                wallet_address, input_type = extract_wallet_or_basename(text)
-                if wallet_address or input_type == "basename_failed":
-                    handle_auto_track(chat_id, text)
+                # Check for threshold setting commands
+                text_lower = text.lower()
+                if any(keyword in text_lower for keyword in ['threshold', 'alert']) and any(char.isdigit() for char in text):
+                    # Extract number from text
+                    import re
+                    numbers = re.findall(r'\d+\.?\d*', text)
+                    if numbers:
+                        try:
+                            threshold = float(numbers[0])
+                            if 0.01 <= threshold <= 10.0:  # Reasonable range
+                                settings = get_user_settings(chat_id)
+                                settings['alert_threshold'] = threshold
+                                save_user_settings(chat_id, settings)
+                                bot.send_message(chat_id, f"✅ Alert threshold set to {threshold} ETH\n\n💡 You'll now only get alerts for transactions ≥ {threshold} ETH")
+                            else:
+                                bot.send_message(chat_id, "❌ Please set threshold between 0.01 and 10.0 ETH")
+                        except ValueError:
+                            bot.send_message(chat_id, "❌ Invalid threshold value. Please use a number like 0.5")
+                    else:
+                        bot.send_message(chat_id, "❌ Please specify a threshold value (e.g., 'set threshold 0.5')")
                 else:
-                    # Unknown command
-                    message = """
+                    # Check for auto-detection (wallet address or basename)
+                    wallet_address, input_type = extract_wallet_or_basename(text)
+                    if wallet_address or input_type == "basename_failed":
+                        handle_auto_track(chat_id, text)
+                    else:
+                        # Unknown command
+                        message = """
 ❓ <b>Unknown command!</b>
 
 📱 <b>Mobile Tip:</b> Use the menu button (≡) or buttons below!
@@ -1125,8 +1446,8 @@ def webhook():
 
 <b>Try typing / to see all commands!</b> 📋
 """
-                    keyboard = create_main_menu_keyboard()
-                    bot.send_message(chat_id, message, reply_markup=keyboard)
+                        keyboard = create_main_menu_keyboard()
+                        bot.send_message(chat_id, message, reply_markup=keyboard)
         
         return jsonify({'status': 'ok'})
     
