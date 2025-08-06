@@ -49,6 +49,25 @@ if not WEB3_AVAILABLE:
         WALLET_AVAILABLE = False
         print(f"❌ Wallet features not available: {e}")
 
+# Ensure all required imports are available globally
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    import base64
+    CRYPTO_AVAILABLE = True
+except ImportError as e:
+    CRYPTO_AVAILABLE = False
+    print(f"❌ Cryptography features not available: {e}")
+
+# Ensure Account is available
+try:
+    from eth_account import Account
+    ACCOUNT_AVAILABLE = True
+except ImportError as e:
+    ACCOUNT_AVAILABLE = False
+    print(f"❌ Account features not available: {e}")
+
 # Load environment variables
 try:
     load_dotenv()
@@ -550,8 +569,11 @@ def decrypt_private_key(encrypted_key, salt, password):
 
 def create_new_wallet(chat_id, wallet_name, password):
     """Create a new wallet for the user"""
-    if not WALLET_AVAILABLE:
-        return None, "Wallet features not available"
+    if not ACCOUNT_AVAILABLE:
+        return None, "Account creation not available - missing eth_account dependency"
+    
+    if not CRYPTO_AVAILABLE:
+        return None, "Encryption not available - missing cryptography dependency"
     
     try:
         # Generate new account
