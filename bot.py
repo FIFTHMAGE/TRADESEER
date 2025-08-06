@@ -209,51 +209,114 @@ def is_basename(text):
 def resolve_basename_to_address(basename):
     """Resolve a basename to wallet address using ENS resolution"""
     try:
-        # Method 1: Use ENS.domains API (most reliable)
-        url = f"https://ens.domains/api/resolve/{basename}"
         headers = {
             'User-Agent': 'TradeSeer-Bot/1.0',
             'Accept': 'application/json'
         }
         
+        print(f"🔍 Attempting to resolve basename: {basename}")
+        
+        # Method 1: Try ENS.domains API with proper endpoint
+        url = f"https://ens.domains/api/resolve/{basename}"
+        print(f"📡 Trying ENS.domains API: {url}")
+        
         response = requests.get(url, headers=headers, timeout=15)
+        print(f"📊 Response status: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
+            print(f"📄 Response data: {data}")
+            
             # Look for ETH address in records
             if data.get('records') and data['records'].get('ETH'):
                 address = data['records']['ETH']
-                print(f"✅ Resolved {basename} to {address}")
+                print(f"✅ Resolved {basename} to {address} (ENS.domains)")
                 return address
             elif data.get('address'):
                 address = data['address']
-                print(f"✅ Resolved {basename} to {address}")
+                print(f"✅ Resolved {basename} to {address} (ENS.domains)")
                 return address
         
-        # Method 2: Try ENS API directly
+        # Method 2: Try ENS API v1
         ens_api_url = f"https://api.ens.domains/v1/name/{basename}"
+        print(f"📡 Trying ENS API v1: {ens_api_url}")
+        
         ens_response = requests.get(ens_api_url, headers=headers, timeout=15)
+        print(f"📊 ENS API response status: {ens_response.status_code}")
         
         if ens_response.status_code == 200:
             ens_data = ens_response.json()
+            print(f"📄 ENS API data: {ens_data}")
+            
             if ens_data.get('records', {}).get('ETH'):
                 address = ens_data['records']['ETH']
-                print(f"✅ Resolved {basename} to {address} (ENS API)")
+                print(f"✅ Resolved {basename} to {address} (ENS API v1)")
                 return address
         
         # Method 3: Try Universal Resolver
-        # This uses ENS's universal resolver which supports .base.eth
         resolver_url = f"https://universal-resolver.ens.domains/resolve/{basename}"
+        print(f"📡 Trying Universal Resolver: {resolver_url}")
+        
         resolver_response = requests.get(resolver_url, headers=headers, timeout=15)
+        print(f"📊 Universal Resolver status: {resolver_response.status_code}")
         
         if resolver_response.status_code == 200:
             resolver_data = resolver_response.json()
+            print(f"📄 Universal Resolver data: {resolver_data}")
+            
             if resolver_data.get('data') and resolver_data['data'].get('address'):
                 address = resolver_data['data']['address']
                 print(f"✅ Resolved {basename} to {address} (Universal Resolver)")
                 return address
         
+        # Method 4: Try ENS Ideas API (alternative)
+        ideas_url = f"https://api.ensideas.com/ens/resolve/{basename}"
+        print(f"📡 Trying ENS Ideas API: {ideas_url}")
+        
+        ideas_response = requests.get(ideas_url, headers=headers, timeout=15)
+        print(f"📊 ENS Ideas response status: {ideas_response.status_code}")
+        
+        if ideas_response.status_code == 200:
+            ideas_data = ideas_response.json()
+            print(f"📄 ENS Ideas data: {ideas_data}")
+            
+            if ideas_data.get('address'):
+                address = ideas_data['address']
+                print(f"✅ Resolved {basename} to {address} (ENS Ideas)")
+                return address
+        
+        # Method 5: Try direct ENS resolution via GraphQL
+        graphql_url = "https://api.thegraph.com/subgraphs/name/ensdomains/ens"
+        graphql_query = """
+        {
+          domains(where: {name: "%s"}) {
+            id
+            name
+            resolvedAddress {
+              id
+            }
+          }
+        }
+        """ % basename.replace('.base.eth', '')
+        
+        print(f"📡 Trying GraphQL: {graphql_url}")
+        
+        graphql_response = requests.post(graphql_url, json={'query': graphql_query}, headers=headers, timeout=15)
+        print(f"📊 GraphQL response status: {graphql_response.status_code}")
+        
+        if graphql_response.status_code == 200:
+            graphql_data = graphql_response.json()
+            print(f"📄 GraphQL data: {graphql_data}")
+            
+            if graphql_data.get('data', {}).get('domains'):
+                for domain in graphql_data['data']['domains']:
+                    if domain.get('resolvedAddress', {}).get('id'):
+                        address = domain['resolvedAddress']['id']
+                        print(f"✅ Resolved {basename} to {address} (GraphQL)")
+                        return address
+        
         print(f"❌ Could not resolve basename: {basename}")
+        print(f"🔍 All resolution methods failed for: {basename}")
         return None
         
     except Exception as e:
@@ -1002,8 +1065,22 @@ def home():
     <p><a href="/health">Health Check</a> | <a href="/set_webhook">Set Webhook</a></p>
     """
 
+def test_basename_resolution():
+    """Test basename resolution with a known basename"""
+    print("🧪 Testing basename resolution...")
+    test_basename = "dami.base.eth"
+    result = resolve_basename_to_address(test_basename)
+    if result:
+        print(f"✅ Test successful: {test_basename} -> {result}")
+    else:
+        print(f"❌ Test failed: Could not resolve {test_basename}")
+    return result
+
 if __name__ == '__main__':
     print("🔮 Starting TradeSeer Bot...")
+    
+    # Test basename resolution on startup
+    test_basename_resolution()
     
     # Initialize database and load existing wallets
     init_database()
