@@ -18,55 +18,46 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
 
-# Web3 imports for proper ENS resolution and wallet management
+# Import all required packages with proper error handling
+WEB3_AVAILABLE = False
+WALLET_AVAILABLE = False
+CRYPTO_AVAILABLE = False
+ACCOUNT_AVAILABLE = False
+
+# Try to import Web3 first
 try:
     from web3 import Web3
     from eth_utils import to_checksum_address
-    from eth_account import Account
-    from eth_account.signers.local import LocalAccount
-    from cryptography.fernet import Fernet
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    import base64
     WEB3_AVAILABLE = True
-    WALLET_AVAILABLE = True
+    print("✅ Web3 available for full blockchain functionality")
 except ImportError as e:
-    WEB3_AVAILABLE = False
-    WALLET_AVAILABLE = False
     print(f"⚠️ Web3 not available - some features may be limited: {e}")
 
-# Fallback for basic wallet functionality without web3
-if not WEB3_AVAILABLE:
-    try:
-        from eth_account import Account
-        from cryptography.fernet import Fernet
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-        import base64
-        WALLET_AVAILABLE = True
-        print("✅ Basic wallet features available without Web3")
-    except ImportError as e:
-        WALLET_AVAILABLE = False
-        print(f"❌ Wallet features not available: {e}")
+# Try to import Account
+try:
+    from eth_account import Account
+    ACCOUNT_AVAILABLE = True
+    print("✅ Account creation available")
+except ImportError as e:
+    print(f"❌ Account features not available: {e}")
 
-# Ensure all required imports are available globally
+# Try to import cryptography
 try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     import base64
     CRYPTO_AVAILABLE = True
+    print("✅ Cryptography features available")
 except ImportError as e:
-    CRYPTO_AVAILABLE = False
     print(f"❌ Cryptography features not available: {e}")
 
-# Ensure Account is available
-try:
-    from eth_account import Account
-    ACCOUNT_AVAILABLE = True
-except ImportError as e:
-    ACCOUNT_AVAILABLE = False
-    print(f"❌ Account features not available: {e}")
+# Set wallet availability based on required components
+if ACCOUNT_AVAILABLE and CRYPTO_AVAILABLE:
+    WALLET_AVAILABLE = True
+    print("✅ Wallet features available")
+else:
+    print("❌ Wallet features not available - missing required dependencies")
 
 # Load environment variables
 try:
