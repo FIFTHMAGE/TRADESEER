@@ -25,8 +25,5 @@ eth-keys==0.4.0
 # Cryptography for secure key management
 cryptography==41.0.7
 
-# JSON-RPC for blockchain interactions
-json-rpc==1.13.1
-
 # Note: SQLite3 is included in Python standard library - no additional install needed
 # Database: SQLite3 (built-in) for persistent wallet tracking storage 
