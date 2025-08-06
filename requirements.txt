@@ -8,6 +8,9 @@ requests==2.31.0
 # Environment variable management
 python-dotenv==1.0.0
 
+# Web3 library for blockchain interactions and ENS resolution
+web3==6.15.1
+
 # Telegram bot library (not used in webhook version but kept for compatibility)
 python-telegram-bot==20.7
 

@@ -16,6 +16,15 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
 
+# Web3 imports for proper ENS resolution
+try:
+    from web3 import Web3
+    from eth_utils import to_checksum_address
+    WEB3_AVAILABLE = True
+except ImportError:
+    WEB3_AVAILABLE = False
+    print("⚠️ Web3 not available - some ENS resolution methods may not work")
+
 # Load environment variables
 try:
     load_dotenv()
@@ -207,7 +216,7 @@ def is_basename(text):
     return match.group().lower() if match else None
 
 def resolve_basename_to_address(basename):
-    """Resolve a basename to wallet address using Base-specific resolution"""
+    """Resolve a basename to wallet address using proper Base name resolution"""
     try:
         headers = {
             'User-Agent': 'TradeSeer-Bot/1.0',
@@ -216,10 +225,10 @@ def resolve_basename_to_address(basename):
         
         print(f"🔍 Attempting to resolve basename: {basename}")
         
-        # Method 1: Try Base-specific resolution via ENS Universal Resolver
-        # Base names use a special resolver that handles .base.eth names
+        # Method 1: Try ENS Universal Resolver (Primary method for Base names)
+        # According to OnchainKit docs, this is the correct way to resolve .base.eth names
         resolver_url = f"https://universal-resolver.ens.domains/resolve/{basename}"
-        print(f"📡 Trying Universal Resolver (Base): {resolver_url}")
+        print(f"📡 Trying ENS Universal Resolver: {resolver_url}")
         
         resolver_response = requests.get(resolver_url, headers=headers, timeout=15)
         print(f"📊 Universal Resolver status: {resolver_response.status_code}")
@@ -234,24 +243,8 @@ def resolve_basename_to_address(basename):
                 print(f"✅ Resolved {basename} to {address} (Universal Resolver)")
                 return address
         
-        # Method 2: Try Base-specific API endpoint
-        # Base has its own resolution service
-        base_resolver_url = f"https://api.base.org/names/{basename}"
-        print(f"📡 Trying Base API: {base_resolver_url}")
-        
-        base_response = requests.get(base_resolver_url, headers=headers, timeout=15)
-        print(f"📊 Base API response status: {base_response.status_code}")
-        
-        if base_response.status_code == 200:
-            base_data = base_response.json()
-            print(f"📄 Base API data: {base_data}")
-            
-            if base_data.get('address'):
-                address = base_data['address']
-                print(f"✅ Resolved {basename} to {address} (Base API)")
-                return address
-        
-        # Method 3: Try ENS.domains with Base-specific handling
+        # Method 2: Try ENS.domains API with proper Base handling
+        # Base names are ENS names, so they should work with ENS.domains
         ens_url = f"https://ens.domains/api/resolve/{basename}"
         print(f"📡 Trying ENS.domains API: {ens_url}")
         
@@ -272,27 +265,49 @@ def resolve_basename_to_address(basename):
                 print(f"✅ Resolved {basename} to {address} (ENS.domains)")
                 return address
         
-        # Method 4: Try Base Name Service (BNS) API
-        # Some Base names might be registered through BNS
-        bns_url = f"https://api.basename.app/resolve/{basename}"
-        print(f"📡 Trying BNS API: {bns_url}")
+        # Method 3: Try ENS API v1
+        ens_api_url = f"https://api.ens.domains/v1/name/{basename}"
+        print(f"📡 Trying ENS API v1: {ens_api_url}")
         
-        bns_response = requests.get(bns_url, headers=headers, timeout=15)
-        print(f"📊 BNS API response status: {bns_response.status_code}")
+        ens_response = requests.get(ens_api_url, headers=headers, timeout=15)
+        print(f"📊 ENS API v1 response status: {ens_response.status_code}")
         
-        if bns_response.status_code == 200:
-            bns_data = bns_response.json()
-            print(f"📄 BNS API data: {bns_data}")
+        if ens_response.status_code == 200:
+            ens_data = ens_response.json()
+            print(f"📄 ENS API v1 data: {ens_data}")
             
-            if bns_data.get('address'):
-                address = bns_data['address']
-                print(f"✅ Resolved {basename} to {address} (BNS API)")
+            if ens_data.get('records', {}).get('ETH'):
+                address = ens_data['records']['ETH']
+                print(f"✅ Resolved {basename} to {address} (ENS API v1)")
                 return address
         
-        # Method 5: Try direct Base chain resolution
-        # Use Base RPC to query the Base Name Service contract
-        base_rpc_url = "https://mainnet.base.org"
-        # This would require web3 library, but let's try a simpler approach first
+        # Method 4: Try Base-specific resolution via CCIP-Read
+        # Base names use CCIP-Read for cross-chain resolution
+        ccip_url = f"https://universal-resolver.ens.domains/resolve/{basename}?coinType=60"
+        print(f"📡 Trying CCIP-Read resolution: {ccip_url}")
+        
+        ccip_response = requests.get(ccip_url, headers=headers, timeout=15)
+        print(f"📊 CCIP-Read response status: {ccip_response.status_code}")
+        
+        if ccip_response.status_code == 200:
+            ccip_data = ccip_response.json()
+            print(f"📄 CCIP-Read data: {ccip_data}")
+            
+            if ccip_data.get('data') and ccip_data['data'].get('address'):
+                address = ccip_data['data']['address']
+                print(f"✅ Resolved {basename} to {address} (CCIP-Read)")
+                return address
+        
+        # Method 5: Try Web3-based ENS resolution (most reliable)
+        if WEB3_AVAILABLE:
+            try:
+                print(f"📡 Trying Web3 ENS resolution for: {basename}")
+                address = resolve_ens_with_web3(basename)
+                if address:
+                    print(f"✅ Resolved {basename} to {address} (Web3)")
+                    return address
+            except Exception as e:
+                print(f"❌ Web3 resolution failed: {e}")
         
         # Method 6: Try ENS Ideas API as fallback
         ideas_url = f"https://api.ensideas.com/ens/resolve/{basename}"
@@ -325,11 +340,80 @@ def resolve_basename_to_address(basename):
         
         print(f"❌ Could not resolve basename: {basename}")
         print(f"🔍 All resolution methods failed for: {basename}")
-        print(f"💡 Note: Base names (.base.eth) may require special resolution methods")
+        print(f"💡 Note: Base names (.base.eth) use ENS protocol with CCIP-Read for cross-chain resolution")
         return None
         
     except Exception as e:
         print(f"❌ Error resolving basename {basename}: {e}")
+        return None
+
+def resolve_ens_with_web3(ens_name):
+    """Resolve ENS name using Web3 library (most reliable method)"""
+    if not WEB3_AVAILABLE:
+        return None
+    
+    try:
+        # Connect to Ethereum mainnet (ENS resolution always starts from L1)
+        w3 = Web3(Web3.HTTPProvider('https://eth.llamarpc.com'))
+        
+        # ENS Registry contract address
+        ens_registry = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'
+        
+        # ENS Registry ABI (minimal for resolution)
+        ens_abi = [
+            {
+                "constant": True,
+                "inputs": [
+                    {"name": "node", "type": "bytes32"}
+                ],
+                "name": "resolver",
+                "outputs": [{"name": "", "type": "address"}],
+                "type": "function"
+            }
+        ]
+        
+        # Resolver ABI (minimal for addr function)
+        resolver_abi = [
+            {
+                "constant": True,
+                "inputs": [
+                    {"name": "node", "type": "bytes32"}
+                ],
+                "name": "addr",
+                "outputs": [{"name": "", "type": "address"}],
+                "type": "function"
+            }
+        ]
+        
+        # Create contract instances
+        registry = w3.eth.contract(address=ens_registry, abi=ens_abi)
+        
+        # Get the namehash of the ENS name
+        namehash = w3.ens.namehash(ens_name)
+        
+        # Get the resolver address
+        resolver_address = registry.functions.resolver(namehash).call()
+        
+        if resolver_address == '0x0000000000000000000000000000000000000000':
+            print(f"❌ No resolver found for {ens_name}")
+            return None
+        
+        # Create resolver contract instance
+        resolver = w3.eth.contract(address=resolver_address, abi=resolver_abi)
+        
+        # Get the address
+        address = resolver.functions.addr(namehash).call()
+        
+        if address == '0x0000000000000000000000000000000000000000':
+            print(f"❌ No address set for {ens_name}")
+            return None
+        
+        # Convert to checksum address
+        checksum_address = to_checksum_address(address)
+        return checksum_address
+        
+    except Exception as e:
+        print(f"❌ Web3 ENS resolution error: {e}")
         return None
 
 def extract_wallet_or_basename(text):
