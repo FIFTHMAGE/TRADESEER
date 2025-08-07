@@ -1,29 +1,25 @@
-# TradeSeer Bot Dependencies
-# Core web framework for webhook handling
-flask==2.3.3
-
-# HTTP requests for API calls (Etherscan, Basescan)
+# Core Flask and web framework
+Flask==2.3.3
 requests==2.31.0
 
-# Environment variable management
+# Environment variables
 python-dotenv==1.0.0
 
-# Web3 library for blockchain interactions and ENS resolution
-web3==6.15.1
+# Web3 and blockchain dependencies
+web3==7.13.0
+eth-account==0.13.7
+eth-utils==5.3.0
 
-# Telegram bot library (not used in webhook version but kept for compatibility)
-python-telegram-bot==20.7
-
-# Wallet connection and token swapping
-eth-account==0.9.0
-eth-utils==2.3.0
-eth-typing==3.5.0
-eth-hash==0.5.2
-eth-keyfile==0.6.1
-eth-keys==0.4.0
-
-# Cryptography for secure key management
+# Cryptography for wallet encryption
 cryptography==41.0.7
 
-# Note: SQLite3 is included in Python standard library - no additional install needed
-# Database: SQLite3 (built-in) for persistent wallet tracking storage 
+# Additional utilities
+secrets
+hashlib
+sqlite3
+threading
+time
+re
+json
+datetime
+logging 
