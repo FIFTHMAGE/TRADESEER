@@ -22,4 +22,8 @@ __pycache__/
 
 # OS files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Database files
+*.db
+tradeseer_bot.db 
