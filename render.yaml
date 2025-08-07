@@ -3,13 +3,15 @@ services:
     name: tradeseer-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python webhook_bot.py
+    startCommand: python bot.py
     plan: free
-    # Force Render to use webhook version
+    # Environment variables for the bot
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: ETHERSCAN_API_KEY
         sync: false
       - key: WEBHOOK_URL
-        sync: false 
+        sync: false
+      - key: PORT
+        value: "5000" 
