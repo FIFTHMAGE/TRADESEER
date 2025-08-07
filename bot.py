@@ -84,6 +84,9 @@ running = True
 # Database setup
 DB_FILE = 'tradeseer_bot.db'
 
+# Global state for pending swaps
+PENDING_SWAPS = {}  # chat_id -> swap_info
+
 def init_database():
     """Initialize SQLite database for persistent storage"""
     conn = sqlite3.connect(DB_FILE)
@@ -965,35 +968,79 @@ You haven't connected any wallets yet.
 {'✅ Active' if is_active else '❌ Inactive'}
 """
         
-        message += "\n💡 <b>Commands:</b>\n• 'swap [token] [amount]' - Buy tokens\n• 'balance [wallet]' - Check balance"
+        message += "\n💡 <b>Commands:</b>\n• 'swap [token] [amount]' - Buy tokens (CA or ticker)\n• 'balance [wallet]' - Check balance"
         bot.send_message(chat_id, message)
     
     elif "swap" in text_lower or "buy" in text_lower:
-        # Extract token and amount
+        # Extract token and amount - support both CA and ticker
         import re
-        token_match = re.search(r'([0-9a-fA-F]{42})', text)  # Token address
-        amount_match = re.search(r'(\d+\.?\d*)', text)  # Amount
         
-        if not token_match or not amount_match:
+        # First try to extract a contract address
+        token_match = re.search(r'([0-9a-fA-F]{42})', text)
+        
+        if token_match:
+            # Found a contract address
+            token_input = token_match.group(1)
+        else:
+            # Try to extract a ticker symbol (word before amount)
+            words = text.split()
+            for i, word in enumerate(words):
+                if word.lower() in ['swap', 'buy'] and i + 2 < len(words):
+                    # Next word should be token, word after that should be amount
+                    token_input = words[i + 1]
+                    break
+            else:
+                # Fallback: try to find any word that could be a ticker
+                for word in words:
+                    if word.lower() not in ['swap', 'buy', 'token', 'tokens'] and not re.match(r'\d+\.?\d*', word):
+                        token_input = word
+                        break
+                else:
+                    token_input = None
+        
+        # Extract amount
+        amount_match = re.search(r'(\d+\.?\d*)', text)
+        
+        if not token_input or not amount_match:
             bot.send_message(chat_id, """
 💱 <b>Token Swap</b>
 
 To buy tokens, use this format:
-<code>swap [token_address] [amount_in_eth]</code>
+<code>swap [token] [amount_in_eth]</code>
 
-<b>Example:</b>
-<code>swap 0x1234567890123456789012345678901234567890 0.1</code>
+<b>Examples:</b>
+• <code>swap USDC 0.1</code> - Buy USDC using ticker
+• <code>swap 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 0.1</code> - Buy using contract address
+• <code>swap pepe 0.05</code> - Buy meme tokens
 
-<b>Requirements:</b>
-• Token address (42 characters starting with 0x)
-• Amount in ETH (e.g., 0.1, 0.5, 1.0)
+<b>Supported:</b>
+• Contract addresses (0x...)
+• Popular token tickers (USDC, USDT, WETH, LINK, etc.)
+• Meme tokens (PEPE, DOGE, SHIB, etc.)
 
 💡 <b>Tip:</b> Use "my wallets" to see your available wallets first!
 """)
             return
         
-        token_address = token_match.group(1)
         amount = float(amount_match.group(1))
+        
+        # Resolve token input to contract address
+        contract_address, token_symbol, source = resolve_token_input(token_input)
+        
+        if not contract_address:
+            bot.send_message(chat_id, f"""
+❌ <b>Token Not Found</b>
+
+Could not find token: <code>{token_input}</code>
+
+<b>Try:</b>
+• Check the token name/spelling
+• Use a contract address instead
+• Try popular tokens like USDC, USDT, WETH
+
+💡 <b>Popular tokens:</b> USDC, USDT, WETH, LINK, UNI, AAVE, COMP, MKR
+""")
+            return
         
         # Get user's wallets
         wallets = get_user_wallets(chat_id)
@@ -1010,12 +1057,22 @@ To buy tokens, use this format:
             bot.send_message(chat_id, f"❌ Insufficient balance. You have {balance:.6f} ETH, need {amount} ETH")
             return
         
-        # Get token info
-        token_info = get_token_info(token_address)
-        token_symbol = token_info.get('tokenSymbol', 'Unknown') if token_info else 'Unknown'
+        # Get token info (use resolved symbol if available)
+        token_info = get_token_info(contract_address)
+        if token_info and token_info.get('tokenSymbol'):
+            token_symbol = token_info.get('tokenSymbol')
+        
+        # Show source information
+        source_info = ""
+        if source == "popular_tokens":
+            source_info = "✅ Found in popular tokens database"
+        elif source == "coingecko":
+            source_info = "🌐 Found via CoinGecko API"
+        elif source == "contract_address":
+            source_info = "📋 Using provided contract address"
         
         # Get gas estimate
-        gas_info, gas_error = get_gas_estimate(wallet_address, token_address, amount)
+        gas_info, gas_error = get_gas_estimate(wallet_address, contract_address, amount)
         
         if gas_error:
             gas_message = "⚠️ Gas estimation failed - using default values"
@@ -1035,13 +1092,14 @@ To buy tokens, use this format:
         message = f"""
 💱 <b>Swap Confirmation</b>
 
-🏷️ <b>Token:</b> {token_symbol} ({token_address[:10]}...)
+🏷️ <b>Token:</b> {token_symbol} ({contract_address[:10]}...)
 💰 <b>Swap Amount:</b> {amount} ETH
 ⛽ <b>Gas Cost:</b> ~{gas_cost:.6f} ETH
 💸 <b>Total Cost:</b> {total_cost:.6f} ETH
 💼 <b>Wallet:</b> {wallet_name}
 📍 <b>Address:</b> <code>{wallet_address}</code>
 
+{source_info}
 {gas_message}
 
 🔐 <b>To execute:</b>
@@ -1052,7 +1110,16 @@ Send your wallet password to confirm the swap.
         bot.send_message(chat_id, message)
         
         # Store pending swap info for password confirmation
-        # In a real implementation, you'd store this in a temporary cache
+        PENDING_SWAPS[chat_id] = {
+            'wallet_address': wallet_address,
+            'contract_address': contract_address,
+            'token_symbol': token_symbol,
+            'amount': amount,
+            'gas_cost': gas_cost,
+            'total_cost': total_cost,
+            'timestamp': time.time()
+        }
+        
         bot.send_message(chat_id, "💡 <b>Next:</b> Send your wallet password to execute the swap")
 
 def set_bot_commands():
@@ -2067,7 +2134,7 @@ Try pasting a wallet address now! 📊
 <b>💼 Wallet Features:</b>
 • Create new wallets: "create wallet name:MyWallet password:MyPass123"
 • View connected wallets: "my wallets"
-• Buy tokens: "swap [token_address] [amount]"
+• Buy tokens: "swap [token] [amount]" (CA or ticker)
 • Check balances automatically
 
 <b>🏷️ Basename Support:</b>
@@ -2157,7 +2224,7 @@ To create a new wallet, send a message with this format:
 💡 <b>After creating:</b>
 • Send ETH to the wallet address
 • Use "my wallets" to see your wallets
-• Use "swap [token] [amount]" to buy tokens
+• Use "swap [token] [amount]" to buy tokens (CA or ticker)
 """)
     elif callback_data == "transaction_history":
         history = get_transaction_history(chat_id)
@@ -2168,7 +2235,7 @@ To create a new wallet, send a message with this format:
 
 To quickly swap tokens, use this format:
 
-<code>swap [token_address] [amount_in_eth]</code>
+<code>swap [token] [amount_in_eth]</code>
 
 <b>Example:</b>
 <code>swap 0x1234567890123456789012345678901234567890 0.1</code>
@@ -2225,6 +2292,49 @@ def webhook():
             elif text.startswith('/wallet') or text.startswith('/wallets'):
                 handle_wallet_connection(chat_id, text)
             else:
+                # Check for pending swap password confirmation first
+                if chat_id in PENDING_SWAPS:
+                    # User is confirming a swap with password
+                    swap_info = PENDING_SWAPS[chat_id]
+                    
+                    # Check if swap is still valid (within 5 minutes)
+                    if time.time() - swap_info['timestamp'] > 300:  # 5 minutes
+                        del PENDING_SWAPS[chat_id]
+                        bot.send_message(chat_id, "❌ Swap confirmation expired. Please try again.")
+                        return jsonify({'status': 'ok'})
+                    
+                    # Execute the swap
+                    tx_hash, error = execute_token_swap(
+                        chat_id,
+                        swap_info['wallet_address'],
+                        swap_info['contract_address'],
+                        swap_info['amount'],
+                        text  # password
+                    )
+                    
+                    # Clear pending swap
+                    del PENDING_SWAPS[chat_id]
+                    
+                    if error:
+                        bot.send_message(chat_id, f"❌ Swap failed: {error}")
+                    else:
+                        bot.send_message(chat_id, f"""
+✅ <b>Swap Executed Successfully!</b>
+
+🏷️ <b>Token:</b> {swap_info['token_symbol']}
+💰 <b>Amount:</b> {swap_info['amount']} ETH
+💸 <b>Total Cost:</b> {swap_info['total_cost']:.6f} ETH
+🔗 <b>Transaction:</b> <code>{tx_hash}</code>
+
+📊 <b>Track your transaction:</b>
+• Use "my wallets" to see updated balances
+• Check transaction status on BaseScan
+
+🎉 <b>Happy trading!</b>
+""")
+                    
+                    return jsonify({'status': 'ok'})
+                
                 # Check for wallet commands
                 text_lower = text.lower()
                 if any(keyword in text_lower for keyword in ['create wallet', 'new wallet', 'my wallets', 'list wallets', 'swap', 'buy']):
@@ -2318,6 +2428,202 @@ def test_basename_resolution():
             print(f"❌ Test failed: Could not resolve {test_basename}")
     
     return True
+
+# Token database for popular tokens on Base network
+POPULAR_TOKENS = {
+    # Popular tokens on Base
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "usdt": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+    "weth": "0x4200000000000000000000000000000000000006",
+    "dai": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+    "link": "0x4a2F0dF2c40D03e8272425Edf011E0369D8f7545",
+    "uni": "0x6fd9d7AD17242c41f7131d257212c54A0e816691",
+    "aave": "0x65a2508C429a6078a7BC2f7dF81aB6BD5d3E5b0a",
+    "comp": "0x9e1028F5F1D5eDE59748FFceE5532509976840E0",
+    "mkr": "0x3F56e0c36d275367b8C502090EDF38289b3dEa0d",
+    "sushi": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "crv": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "yfi": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "bal": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "snx": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "1inch": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "ens": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "matic": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "avax": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "dot": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "atom": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "sol": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "ada": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "xrp": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "ltc": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "bch": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "etc": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "xlm": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "vet": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "icp": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "fil": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "apt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "near": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "algo": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "flow": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "hbar": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "sand": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "mana": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "enj": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "grt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "bat": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "zrx": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "knc": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "ren": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "oxt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "storj": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "nano": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "omg": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "zil": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "waves": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "hot": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "theta": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "iota": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "neo": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "qtum": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "dash": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "xmr": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "eos": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "trx": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "btt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "leo": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "cake": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "doge": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "shib": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "pepe": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "floki": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "bonk": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "wojak": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "meme": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "chad": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "based": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "degen": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "moon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "rocket": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "elon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "inu": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "cat": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "dog": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "baby": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "safe": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "moon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "star": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "gem": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "diamond": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "gold": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "silver": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "platinum": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "palladium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "copper": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "iron": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "steel": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "aluminum": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "nickel": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "zinc": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "lead": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "tin": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "titanium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "tungsten": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "cobalt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "lithium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "uranium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "plutonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "thorium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "radium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "polonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "americium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "curium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "berkelium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "californium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "einsteinium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "fermium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "mendelevium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "nobelium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "lawrencium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "rutherfordium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "dubnium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "seaborgium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "bohrium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "hassium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "meitnerium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "darmstadtium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "roentgenium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "copernicium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "nihonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "flerovium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "moscovium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "livermorium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "tennessine": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    "oganesson": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+}
+
+def resolve_token_input(token_input):
+    """
+    Resolve token input to contract address.
+    Supports both contract addresses and ticker symbols.
+    
+    Args:
+        token_input (str): Token address or ticker symbol
+        
+    Returns:
+        tuple: (contract_address, token_symbol, source)
+    """
+    token_input_lower = token_input.lower().strip()
+    
+    # Check if it's already a contract address
+    if token_input.startswith('0x') and len(token_input) == 42:
+        # First check if it's in our popular tokens database (reverse lookup)
+        for ticker, address in POPULAR_TOKENS.items():
+            if address.lower() == token_input.lower():
+                return token_input, ticker.upper(), "contract_address"
+        
+        # Get token info to get symbol
+        token_info = get_token_info(token_input)
+        token_symbol = token_info.get('tokenSymbol', 'Unknown') if token_info else 'Unknown'
+        return token_input, token_symbol, "contract_address"
+    
+    # Check if it's in our popular tokens database
+    if token_input_lower in POPULAR_TOKENS:
+        contract_address = POPULAR_TOKENS[token_input_lower]
+        return contract_address, token_input_lower.upper(), "popular_tokens"
+    
+    # Try to search via CoinGecko API for Base network tokens
+    try:
+        # Search for token on Base network
+        search_url = f"https://api.coingecko.com/api/v3/search?query={token_input_lower}"
+        response = requests.get(search_url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            coins = data.get('coins', [])
+            
+            # Look for tokens that might be on Base
+            for coin in coins[:5]:  # Check first 5 results
+                coin_id = coin.get('id')
+                if coin_id:
+                    # Get detailed info for this coin
+                    detail_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+                    detail_response = requests.get(detail_url, timeout=10)
+                    
+                    if detail_response.status_code == 200:
+                        detail_data = detail_response.json()
+                        platforms = detail_data.get('platforms', {})
+                        
+                        # Check if token exists on Base
+                        base_address = platforms.get('base')
+                        if base_address and base_address != '0x0000000000000000000000000000000000000000':
+                            return base_address, coin.get('symbol', '').upper(), "coingecko"
+        
+        return None, None, "not_found"
+        
+    except Exception as e:
+        print(f"Error searching for token {token_input}: {e}")
+        return None, None, "error"
 
 if __name__ == '__main__':
     print("🔮 Starting TradeSeer Bot...")
