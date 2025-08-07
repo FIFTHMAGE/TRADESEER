@@ -84,8 +84,9 @@ running = True
 # Database setup
 DB_FILE = 'tradeseer_bot.db'
 
-# Global state for pending swaps
+# Global state for pending swaps and token info requests
 PENDING_SWAPS = {}  # chat_id -> swap_info
+TOKEN_INFO_REQUESTS = {}  # chat_id -> token_info_request
 
 def init_database():
     """Initialize SQLite database for persistent storage"""
@@ -2308,7 +2309,7 @@ def webhook():
                         chat_id,
                         swap_info['wallet_address'],
                         swap_info['contract_address'],
-                        swap_info['amount'],
+                        swap_info['payment_amount'],
                         text  # password
                     )
                     
@@ -2322,8 +2323,8 @@ def webhook():
 ✅ <b>Swap Executed Successfully!</b>
 
 🏷️ <b>Token:</b> {swap_info['token_symbol']}
-💰 <b>Amount:</b> {swap_info['amount']} ETH
-💸 <b>Total Cost:</b> {swap_info['total_cost']:.6f} ETH
+💰 <b>Payment:</b> {swap_info['payment_amount']} {swap_info.get('payment_token', 'ETH')}
+📊 <b>Estimated tokens:</b> {swap_info.get('estimated_tokens', 0):.2f} {swap_info['token_symbol']}
 🔗 <b>Transaction:</b> <code>{tx_hash}</code>
 
 📊 <b>Track your transaction:</b>
@@ -2333,6 +2334,23 @@ def webhook():
 🎉 <b>Happy trading!</b>
 """)
                     
+                    return jsonify({'status': 'ok'})
+                
+                # Check for buy requests after token info
+                if chat_id in TOKEN_INFO_REQUESTS and 'buy with' in text.lower():
+                    handle_buy_request(chat_id, text)
+                    return jsonify({'status': 'ok'})
+                
+                # Check for token drops (CA or ticker)
+                import re
+                # Check if it's a contract address
+                if re.match(r'^0x[a-fA-F0-9]{40}$', text.strip()):
+                    handle_token_info_request(chat_id, text.strip())
+                    return jsonify({'status': 'ok'})
+                
+                # Check if it's a ticker symbol (3-10 characters, all caps or all lowercase)
+                if re.match(r'^[A-Za-z]{3,10}$', text.strip()):
+                    handle_token_info_request(chat_id, text.strip())
                     return jsonify({'status': 'ok'})
                 
                 # Check for wallet commands
@@ -2624,6 +2642,369 @@ def resolve_token_input(token_input):
     except Exception as e:
         print(f"Error searching for token {token_input}: {e}")
         return None, None, "error"
+
+def get_comprehensive_token_info(token_input):
+    """
+    Get comprehensive token information including price, market cap, volume, etc.
+    
+    Args:
+        token_input (str): Token address or ticker symbol
+        
+    Returns:
+        dict: Comprehensive token information
+    """
+    # First resolve the token input
+    contract_address, token_symbol, source = resolve_token_input(token_input)
+    
+    if not contract_address:
+        return None, f"Token not found: {token_input}"
+    
+    try:
+        # Get basic token info from Etherscan
+        token_info = get_token_info(contract_address)
+        
+        # Get price and market data from CoinGecko
+        price_data = get_token_price_data(contract_address, token_symbol)
+        
+        # Combine the information
+        comprehensive_info = {
+            'contract_address': contract_address,
+            'symbol': token_symbol,
+            'source': source,
+            'name': token_info.get('tokenName', 'Unknown') if token_info else 'Unknown',
+            'decimals': token_info.get('tokenDecimal', 18) if token_info else 18,
+            'price_usd': price_data.get('price_usd', 0),
+            'price_change_24h': price_data.get('price_change_24h', 0),
+            'market_cap': price_data.get('market_cap', 0),
+            'volume_24h': price_data.get('volume_24h', 0),
+            'circulating_supply': price_data.get('circulating_supply', 0),
+            'total_supply': price_data.get('total_supply', 0),
+            'ath': price_data.get('ath', 0),
+            'ath_change_percentage': price_data.get('ath_change_percentage', 0),
+            'last_updated': price_data.get('last_updated', 'Unknown')
+        }
+        
+        return comprehensive_info, None
+        
+    except Exception as e:
+        print(f"Error getting comprehensive token info: {e}")
+        return None, f"Error retrieving token information: {e}"
+
+def get_token_price_data(contract_address, token_symbol):
+    """
+    Get token price and market data from CoinGecko API
+    
+    Args:
+        contract_address (str): Token contract address
+        token_symbol (str): Token symbol
+        
+    Returns:
+        dict: Price and market data
+    """
+    try:
+        # Try to get data by contract address first
+        url = f"https://api.coingecko.com/api/v3/simple/token_price/base?contract_addresses={contract_address}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true&include_last_updated_at=true"
+        
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if contract_address.lower() in data:
+                token_data = data[contract_address.lower()]
+                return {
+                    'price_usd': token_data.get('usd', 0),
+                    'price_change_24h': token_data.get('usd_24h_change', 0),
+                    'market_cap': token_data.get('usd_market_cap', 0),
+                    'volume_24h': token_data.get('usd_24h_vol', 0),
+                    'last_updated': token_data.get('last_updated_at', 'Unknown')
+                }
+        
+        # If contract address lookup fails, try by symbol
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={token_symbol.lower()}&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true&include_last_updated_at=true"
+        
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if token_symbol.lower() in data:
+                token_data = data[token_symbol.lower()]
+                return {
+                    'price_usd': token_data.get('usd', 0),
+                    'price_change_24h': token_data.get('usd_24h_change', 0),
+                    'market_cap': token_data.get('usd_market_cap', 0),
+                    'volume_24h': token_data.get('usd_24h_vol', 0),
+                    'last_updated': token_data.get('last_updated_at', 'Unknown')
+                }
+        
+        # Fallback: return basic structure
+        return {
+            'price_usd': 0,
+            'price_change_24h': 0,
+            'market_cap': 0,
+            'volume_24h': 0,
+            'circulating_supply': 0,
+            'total_supply': 0,
+            'ath': 0,
+            'ath_change_percentage': 0,
+            'last_updated': 'Unknown'
+        }
+        
+    except Exception as e:
+        print(f"Error getting price data: {e}")
+        return {
+            'price_usd': 0,
+            'price_change_24h': 0,
+            'market_cap': 0,
+            'volume_24h': 0,
+            'circulating_supply': 0,
+            'total_supply': 0,
+            'ath': 0,
+            'ath_change_percentage': 0,
+            'last_updated': 'Unknown'
+        }
+
+def format_token_info_message(token_info):
+    """
+    Format token information into a readable message
+    
+    Args:
+        token_info (dict): Comprehensive token information
+        
+    Returns:
+        str: Formatted message
+    """
+    price = token_info.get('price_usd', 0)
+    price_change = token_info.get('price_change_24h', 0)
+    market_cap = token_info.get('market_cap', 0)
+    volume = token_info.get('volume_24h', 0)
+    
+    # Format price change
+    price_change_emoji = "📈" if price_change > 0 else "📉" if price_change < 0 else "➡️"
+    price_change_str = f"{price_change:+.2f}%" if price_change != 0 else "0.00%"
+    
+    # Format large numbers
+    def format_number(num):
+        if num >= 1e9:
+            return f"${num/1e9:.2f}B"
+        elif num >= 1e6:
+            return f"${num/1e6:.2f}M"
+        elif num >= 1e3:
+            return f"${num/1e3:.2f}K"
+        else:
+            return f"${num:.2f}"
+    
+    message = f"""
+🪙 <b>Token Information</b>
+
+🏷️ <b>Name:</b> {token_info.get('name', 'Unknown')} ({token_info.get('symbol', 'Unknown')})
+📍 <b>Contract:</b> <code>{token_info.get('contract_address', 'Unknown')}</code>
+💰 <b>Price:</b> ${price:.6f} {price_change_emoji} {price_change_str}
+📊 <b>Market Cap:</b> {format_number(market_cap)}
+📈 <b>24h Volume:</b> {format_number(volume)}
+🔗 <b>Network:</b> Base
+
+💡 <b>Source:</b> {token_info.get('source', 'Unknown').replace('_', ' ').title()}
+🕒 <b>Updated:</b> {token_info.get('last_updated', 'Unknown')}
+"""
+    
+    return message
+
+def handle_token_info_request(chat_id, token_input):
+    """
+    Handle token information request and initiate buying flow
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        token_input (str): Token address or ticker symbol
+    """
+    # Get comprehensive token information
+    token_info, error = get_comprehensive_token_info(token_input)
+    
+    if error:
+        bot.send_message(chat_id, f"""
+❌ <b>Token Not Found</b>
+
+Could not find token: <code>{token_input}</code>
+
+<b>Try:</b>
+• Check the token name/spelling
+• Use a contract address instead
+• Try popular tokens like USDC, USDT, WETH
+
+💡 <b>Popular tokens:</b> USDC, USDT, WETH, LINK, UNI, AAVE, COMP, MKR
+""")
+        return
+    
+    # Format and send token information
+    info_message = format_token_info_message(token_info)
+    
+    # Add buying options
+    buy_message = f"""
+{info_message}
+
+💱 <b>Want to buy this token?</b>
+
+<b>Payment Options:</b>
+• ETH (native)
+• USDC (stablecoin)
+• USDT (stablecoin)
+
+<b>To buy:</b>
+Reply with your payment choice and amount:
+• <code>buy with ETH 0.1</code>
+• <code>buy with USDC 100</code>
+• <code>buy with USDT 100</code>
+
+💡 <b>Note:</b> You need a connected wallet to buy tokens.
+Use "my wallets" to see your available wallets.
+"""
+    
+    # Store token info for buying flow
+    TOKEN_INFO_REQUESTS[chat_id] = {
+        'token_info': token_info,
+        'timestamp': time.time()
+    }
+    
+    bot.send_message(chat_id, buy_message)
+
+def handle_buy_request(chat_id, text):
+    """
+    Handle buy request after token info
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        text (str): Buy command text
+    """
+    if chat_id not in TOKEN_INFO_REQUESTS:
+        bot.send_message(chat_id, "❌ No token selected. Please search for a token first.")
+        return
+    
+    # Check if request is still valid (within 10 minutes)
+    if time.time() - TOKEN_INFO_REQUESTS[chat_id]['timestamp'] > 600:  # 10 minutes
+        del TOKEN_INFO_REQUESTS[chat_id]
+        bot.send_message(chat_id, "❌ Token selection expired. Please search for a token again.")
+        return
+    
+    token_info = TOKEN_INFO_REQUESTS[chat_id]['token_info']
+    
+    # Parse buy command
+    import re
+    buy_match = re.search(r'buy with (\w+) (\d+\.?\d*)', text.lower())
+    
+    if not buy_match:
+        bot.send_message(chat_id, """
+❌ <b>Invalid Buy Command</b>
+
+<b>Correct format:</b>
+• <code>buy with ETH 0.1</code>
+• <code>buy with USDC 100</code>
+• <code>buy with USDT 100</code>
+
+<b>Example:</b>
+<code>buy with ETH 0.05</code> - Buy with 0.05 ETH
+""")
+        return
+    
+    payment_token = buy_match.group(1).upper()
+    amount = float(buy_match.group(2))
+    
+    # Validate payment token
+    valid_payment_tokens = ['ETH', 'USDC', 'USDT']
+    if payment_token not in valid_payment_tokens:
+        bot.send_message(chat_id, f"""
+❌ <b>Invalid Payment Token</b>
+
+<b>Supported payment tokens:</b>
+• ETH
+• USDC
+• USDT
+
+<b>Example:</b>
+<code>buy with ETH 0.1</code>
+""")
+        return
+    
+    # Get user's wallets
+    wallets = get_user_wallets(chat_id)
+    if not wallets:
+        bot.send_message(chat_id, """
+❌ <b>No Wallets Connected</b>
+
+You need to connect a wallet to buy tokens.
+
+<b>Options:</b>
+• Create new wallet: "create wallet name:MyWallet password:MyPass123"
+• Import existing wallet: "connect wallet [private_key]"
+
+💡 <b>Tip:</b> Start with creating a new wallet!
+""")
+        return
+    
+    # For now, use the first wallet
+    wallet_address, wallet_name, _ = wallets[0]
+    
+    # Check balance for payment token
+    if payment_token == 'ETH':
+        balance = get_wallet_balance(wallet_address)
+        balance_str = f"{balance:.6f} ETH" if balance is not None else "Unknown"
+    else:
+        # For USDC/USDT, we'd need to check token balance
+        balance = 0  # Placeholder - would need to implement token balance checking
+        balance_str = f"{balance} {payment_token}"
+    
+    if balance is None or balance < amount:
+        bot.send_message(chat_id, f"""
+❌ <b>Insufficient Balance</b>
+
+You have: {balance_str}
+Need: {amount} {payment_token}
+
+💡 <b>Tip:</b> Send more {payment_token} to your wallet first.
+""")
+        return
+    
+    # Calculate estimated tokens to receive
+    target_token_price = token_info.get('price_usd', 0)
+    payment_amount_usd = amount * (1 if payment_token == 'USDC' or payment_token == 'USDT' else 0)  # Placeholder for ETH price
+    
+    if target_token_price > 0:
+        estimated_tokens = payment_amount_usd / target_token_price
+    else:
+        estimated_tokens = 0
+    
+    # Show confirmation
+    confirmation_message = f"""
+💱 <b>Buy Confirmation</b>
+
+🪙 <b>Buying:</b> {token_info.get('symbol', 'Unknown')} ({token_info.get('name', 'Unknown')})
+💰 <b>Payment:</b> {amount} {payment_token}
+📊 <b>Estimated tokens:</b> {estimated_tokens:.2f} {token_info.get('symbol', 'Unknown')}
+💼 <b>Wallet:</b> {wallet_name}
+📍 <b>Address:</b> <code>{wallet_address}</code>
+
+⛽ <b>Gas fee:</b> ~0.001-0.005 ETH (estimated)
+
+🔐 <b>To execute:</b>
+Send your wallet password to confirm the purchase.
+
+⚠️ <b>Security:</b> Your password is only used to decrypt your private key and is not stored.
+"""
+    
+    # Store pending buy info
+    PENDING_SWAPS[chat_id] = {
+        'wallet_address': wallet_address,
+        'contract_address': token_info.get('contract_address'),
+        'token_symbol': token_info.get('symbol'),
+        'payment_token': payment_token,
+        'payment_amount': amount,
+        'estimated_tokens': estimated_tokens,
+        'timestamp': time.time()
+    }
+    
+    # Clear token info request
+    del TOKEN_INFO_REQUESTS[chat_id]
+    
+    bot.send_message(chat_id, confirmation_message)
 
 if __name__ == '__main__':
     print("🔮 Starting TradeSeer Bot...")
