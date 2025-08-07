@@ -2582,70 +2582,241 @@ POPULAR_TOKENS = {
 
 def resolve_token_input(token_input):
     """
-    Resolve token input to contract address.
-    Supports both contract addresses and ticker symbols.
+    Resolve token input (ticker or contract address) to contract address and symbol.
+    Enhanced to use DexScreener and Pump.fun for broader token discovery.
     
     Args:
-        token_input (str): Token address or ticker symbol
+        token_input (str): Token ticker symbol or contract address
         
     Returns:
         tuple: (contract_address, token_symbol, source)
     """
-    token_input_lower = token_input.lower().strip()
+    if not token_input:
+        return None, None, "error"
     
-    # Check if it's already a contract address
+    token_input = token_input.strip()
+    
+    # Check if it's a contract address
     if token_input.startswith('0x') and len(token_input) == 42:
-        # First check if it's in our popular tokens database (reverse lookup)
+        # First check our popular tokens database for known symbols
         for ticker, address in POPULAR_TOKENS.items():
             if address.lower() == token_input.lower():
                 return token_input, ticker.upper(), "contract_address"
         
-        # Get token info to get symbol
-        token_info = get_token_info(token_input)
-        token_symbol = token_info.get('tokenSymbol', 'Unknown') if token_info else 'Unknown'
-        return token_input, token_symbol, "contract_address"
+        # If not in our database, try to get info from DexScreener
+        dex_info = get_token_info_from_dexscreener(token_input)
+        if dex_info:
+            return token_input, dex_info.get('symbol', 'Unknown').upper(), "contract_address"
+        
+        # Fallback: return the address with "Unknown" symbol
+        return token_input, "Unknown", "contract_address"
     
-    # Check if it's in our popular tokens database
-    if token_input_lower in POPULAR_TOKENS:
-        contract_address = POPULAR_TOKENS[token_input_lower]
-        return contract_address, token_input_lower.upper(), "popular_tokens"
+    # Check our popular tokens database first
+    if token_input.upper() in POPULAR_TOKENS:
+        return POPULAR_TOKENS[token_input.upper()], token_input.upper(), "popular_tokens"
     
-    # Try to search via CoinGecko API for Base network tokens
+    # Try DexScreener for broader token discovery
+    dex_info = search_token_on_dexscreener(token_input)
+    if dex_info:
+        return dex_info.get('address'), dex_info.get('symbol', token_input.upper()).upper(), "dexscreener"
+    
+    # Try Pump.fun for additional token discovery
+    pump_info = search_token_on_pumpfun(token_input)
+    if pump_info:
+        return pump_info.get('address'), pump_info.get('symbol', token_input.upper()).upper(), "pumpfun"
+    
+    # Try CoinGecko as final fallback
+    coingecko_info = search_token_on_coingecko(token_input)
+    if coingecko_info:
+        return coingecko_info.get('address'), coingecko_info.get('symbol', token_input.upper()).upper(), "coingecko"
+    
+    return None, None, "not_found"
+
+def get_token_info_from_dexscreener(contract_address):
+    """
+    Get token information from DexScreener by contract address
+    
+    Args:
+        contract_address (str): Token contract address
+        
+    Returns:
+        dict: Token information or None
+    """
     try:
-        # Search for token on Base network
-        search_url = f"https://api.coingecko.com/api/v3/search?query={token_input_lower}"
-        response = requests.get(search_url, timeout=10)
+        # DexScreener API endpoint for Base network
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{contract_address}"
+        
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            coins = data.get('coins', [])
             
-            # Look for tokens that might be on Base
-            for coin in coins[:5]:  # Check first 5 results
-                coin_id = coin.get('id')
-                if coin_id:
-                    # Get detailed info for this coin
+            if 'pairs' in data and data['pairs']:
+                # Get the first pair (usually the most liquid)
+                pair = data['pairs'][0]
+                
+                return {
+                    'address': contract_address,
+                    'symbol': pair.get('baseToken', {}).get('symbol', 'Unknown'),
+                    'name': pair.get('baseToken', {}).get('name', 'Unknown'),
+                    'price': pair.get('priceUsd', 0),
+                    'price_change_24h': pair.get('priceChange', {}).get('h24', 0),
+                    'volume_24h': pair.get('volume', {}).get('h24', 0),
+                    'liquidity': pair.get('liquidity', {}).get('usd', 0),
+                    'dex': pair.get('dexId', 'Unknown'),
+                    'pair_address': pair.get('pairAddress', 'Unknown')
+                }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error getting token info from DexScreener: {e}")
+        return None
+
+def search_token_on_dexscreener(token_symbol):
+    """
+    Search for token on DexScreener by symbol
+    
+    Args:
+        token_symbol (str): Token symbol to search for
+        
+    Returns:
+        dict: Token information or None
+    """
+    try:
+        # DexScreener search endpoint
+        url = f"https://api.dexscreener.com/latest/dex/search?q={token_symbol}"
+        
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'pairs' in data and data['pairs']:
+                # Filter for Base network pairs
+                base_pairs = [pair for pair in data['pairs'] if pair.get('chainId') == 'base']
+                
+                if base_pairs:
+                    # Get the most liquid pair
+                    best_pair = max(base_pairs, key=lambda x: x.get('liquidity', {}).get('usd', 0))
+                    
+                    return {
+                        'address': best_pair.get('baseToken', {}).get('address', 'Unknown'),
+                        'symbol': best_pair.get('baseToken', {}).get('symbol', token_symbol.upper()),
+                        'name': best_pair.get('baseToken', {}).get('name', 'Unknown'),
+                        'price': best_pair.get('priceUsd', 0),
+                        'price_change_24h': best_pair.get('priceChange', {}).get('h24', 0),
+                        'volume_24h': best_pair.get('volume', {}).get('h24', 0),
+                        'liquidity': best_pair.get('liquidity', {}).get('usd', 0),
+                        'dex': best_pair.get('dexId', 'Unknown'),
+                        'pair_address': best_pair.get('pairAddress', 'Unknown')
+                    }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error searching token on DexScreener: {e}")
+        return None
+
+def search_token_on_pumpfun(token_symbol):
+    """
+    Search for token on Pump.fun by symbol
+    
+    Args:
+        token_symbol (str): Token symbol to search for
+        
+    Returns:
+        dict: Token information or None
+    """
+    try:
+        # Pump.fun API endpoint (Base network)
+        url = f"https://api.pump.fun/v1/tokens/search?q={token_symbol}&chain=base"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'data' in data and data['data']:
+                # Get the first result
+                token = data['data'][0]
+                
+                return {
+                    'address': token.get('address', 'Unknown'),
+                    'symbol': token.get('symbol', token_symbol.upper()),
+                    'name': token.get('name', 'Unknown'),
+                    'price': token.get('price', 0),
+                    'market_cap': token.get('marketCap', 0),
+                    'volume_24h': token.get('volume24h', 0),
+                    'holders': token.get('holders', 0),
+                    'created_at': token.get('createdAt', 'Unknown')
+                }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error searching token on Pump.fun: {e}")
+        return None
+
+def search_token_on_coingecko(token_symbol):
+    """
+    Search for token on CoinGecko by symbol (fallback)
+    
+    Args:
+        token_symbol (str): Token symbol to search for
+        
+    Returns:
+        dict: Token information or None
+    """
+    try:
+        # CoinGecko search endpoint
+        url = f"https://api.coingecko.com/api/v3/search?query={token_symbol}"
+        
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'coins' in data and data['coins']:
+                # Look for Base network tokens
+                for coin in data['coins']:
+                    # Check if it has Base network info
+                    coin_id = coin.get('id', '')
+                    
+                    # Get detailed coin info
                     detail_url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
                     detail_response = requests.get(detail_url, timeout=10)
                     
                     if detail_response.status_code == 200:
                         detail_data = detail_response.json()
-                        platforms = detail_data.get('platforms', {})
                         
-                        # Check if token exists on Base
-                        base_address = platforms.get('base')
-                        if base_address and base_address != '0x0000000000000000000000000000000000000000':
-                            return base_address, coin.get('symbol', '').upper(), "coingecko"
+                        # Check for Base network contract
+                        if 'platforms' in detail_data:
+                            base_contract = detail_data['platforms'].get('base', '')
+                            if base_contract:
+                                return {
+                                    'address': base_contract,
+                                    'symbol': coin.get('symbol', token_symbol.upper()).upper(),
+                                    'name': coin.get('name', 'Unknown'),
+                                    'price': detail_data.get('market_data', {}).get('current_price', {}).get('usd', 0),
+                                    'market_cap': detail_data.get('market_data', {}).get('market_cap', {}).get('usd', 0),
+                                    'volume_24h': detail_data.get('market_data', {}).get('total_volume', {}).get('usd', 0)
+                                }
         
-        return None, None, "not_found"
+        return None
         
     except Exception as e:
-        print(f"Error searching for token {token_input}: {e}")
-        return None, None, "error"
+        print(f"Error searching token on CoinGecko: {e}")
+        return None
 
 def get_comprehensive_token_info(token_input):
     """
     Get comprehensive token information including price, market cap, volume, etc.
+    Enhanced to use DexScreener, Pump.fun, and other sources for better data.
     
     Args:
         token_input (str): Token address or ticker symbol
@@ -2660,6 +2831,78 @@ def get_comprehensive_token_info(token_input):
         return None, f"Token not found: {token_input}"
     
     try:
+        # Get enhanced data based on source
+        if source == "dexscreener":
+            # Get data from DexScreener
+            dex_info = get_token_info_from_dexscreener(contract_address)
+            if dex_info:
+                comprehensive_info = {
+                    'contract_address': contract_address,
+                    'symbol': token_symbol,
+                    'source': source,
+                    'name': dex_info.get('name', 'Unknown'),
+                    'decimals': 18,  # Default for most tokens
+                    'price_usd': dex_info.get('price', 0),
+                    'price_change_24h': dex_info.get('price_change_24h', 0),
+                    'market_cap': 0,  # DexScreener doesn't provide this directly
+                    'volume_24h': dex_info.get('volume_24h', 0),
+                    'liquidity': dex_info.get('liquidity', 0),
+                    'dex': dex_info.get('dex', 'Unknown'),
+                    'circulating_supply': 0,
+                    'total_supply': 0,
+                    'ath': 0,
+                    'ath_change_percentage': 0,
+                    'last_updated': 'Now'
+                }
+                return comprehensive_info, None
+        
+        elif source == "pumpfun":
+            # Get data from Pump.fun
+            pump_info = search_token_on_pumpfun(token_symbol)
+            if pump_info:
+                comprehensive_info = {
+                    'contract_address': contract_address,
+                    'symbol': token_symbol,
+                    'source': source,
+                    'name': pump_info.get('name', 'Unknown'),
+                    'decimals': 18,
+                    'price_usd': pump_info.get('price', 0),
+                    'price_change_24h': 0,  # Pump.fun doesn't provide this
+                    'market_cap': pump_info.get('market_cap', 0),
+                    'volume_24h': pump_info.get('volume_24h', 0),
+                    'holders': pump_info.get('holders', 0),
+                    'created_at': pump_info.get('created_at', 'Unknown'),
+                    'circulating_supply': 0,
+                    'total_supply': 0,
+                    'ath': 0,
+                    'ath_change_percentage': 0,
+                    'last_updated': 'Now'
+                }
+                return comprehensive_info, None
+        
+        elif source == "coingecko":
+            # Get data from CoinGecko
+            coingecko_info = search_token_on_coingecko(token_symbol)
+            if coingecko_info:
+                comprehensive_info = {
+                    'contract_address': contract_address,
+                    'symbol': token_symbol,
+                    'source': source,
+                    'name': coingecko_info.get('name', 'Unknown'),
+                    'decimals': 18,
+                    'price_usd': coingecko_info.get('price', 0),
+                    'price_change_24h': 0,  # Would need additional API call
+                    'market_cap': coingecko_info.get('market_cap', 0),
+                    'volume_24h': coingecko_info.get('volume_24h', 0),
+                    'circulating_supply': 0,
+                    'total_supply': 0,
+                    'ath': 0,
+                    'ath_change_percentage': 0,
+                    'last_updated': 'Now'
+                }
+                return comprehensive_info, None
+        
+        # Fallback to original method for popular tokens and contract addresses
         # Get basic token info from Etherscan
         token_info = get_token_info(contract_address)
         
@@ -2777,33 +3020,76 @@ def format_token_info_message(token_info):
     price_change = token_info.get('price_change_24h', 0)
     market_cap = token_info.get('market_cap', 0)
     volume = token_info.get('volume_24h', 0)
+    liquidity = token_info.get('liquidity', 0)
+    holders = token_info.get('holders', 0)
+    dex = token_info.get('dex', '')
+    source = token_info.get('source', 'Unknown')
     
     # Format price change
-    price_change_emoji = "📈" if price_change > 0 else "📉" if price_change < 0 else "➡️"
-    price_change_str = f"{price_change:+.2f}%" if price_change != 0 else "0.00%"
+    try:
+        price_change = float(price_change)
+        price_change_emoji = "📈" if price_change > 0 else "📉" if price_change < 0 else "➡️"
+        price_change_str = f"{price_change:+.2f}%" if price_change != 0 else "0.00%"
+    except (ValueError, TypeError):
+        price_change_emoji = "➡️"
+        price_change_str = "0.00%"
     
     # Format large numbers
     def format_number(num):
-        if num >= 1e9:
-            return f"${num/1e9:.2f}B"
-        elif num >= 1e6:
-            return f"${num/1e6:.2f}M"
-        elif num >= 1e3:
-            return f"${num/1e3:.2f}K"
-        else:
-            return f"${num:.2f}"
+        try:
+            num = float(num)
+            if num >= 1e9:
+                return f"${num/1e9:.2f}B"
+            elif num >= 1e6:
+                return f"${num/1e6:.2f}M"
+            elif num >= 1e3:
+                return f"${num/1e3:.2f}K"
+            else:
+                return f"${num:.2f}"
+        except (ValueError, TypeError):
+            return "$0.00"
+    
+    # Format source with emoji
+    source_emoji = {
+        'popular_tokens': '🏆',
+        'dexscreener': '📊',
+        'pumpfun': '🚀',
+        'coingecko': '🦎',
+        'contract_address': '📍'
+    }.get(source, '💡')
+    
+    # Format price safely
+    try:
+        price = float(price)
+        price_str = f"${price:.6f}"
+    except (ValueError, TypeError):
+        price_str = "$0.000000"
     
     message = f"""
 🪙 <b>Token Information</b>
 
 🏷️ <b>Name:</b> {token_info.get('name', 'Unknown')} ({token_info.get('symbol', 'Unknown')})
 📍 <b>Contract:</b> <code>{token_info.get('contract_address', 'Unknown')}</code>
-💰 <b>Price:</b> ${price:.6f} {price_change_emoji} {price_change_str}
+💰 <b>Price:</b> {price_str} {price_change_emoji} {price_change_str}
 📊 <b>Market Cap:</b> {format_number(market_cap)}
-📈 <b>24h Volume:</b> {format_number(volume)}
+📈 <b>24h Volume:</b> {format_number(volume)}"""
+
+    # Add source-specific information
+    if source == "dexscreener" and liquidity > 0:
+        message += f"\n💧 <b>Liquidity:</b> {format_number(liquidity)}"
+        if dex:
+            message += f"\n🏪 <b>DEX:</b> {dex}"
+    
+    elif source == "pumpfun" and holders > 0:
+        message += f"\n👥 <b>Holders:</b> {holders:,}"
+        created_at = token_info.get('created_at', '')
+        if created_at and created_at != 'Unknown':
+            message += f"\n📅 <b>Created:</b> {created_at}"
+    
+    message += f"""
 🔗 <b>Network:</b> Base
 
-💡 <b>Source:</b> {token_info.get('source', 'Unknown').replace('_', ' ').title()}
+{source_emoji} <b>Source:</b> {source.replace('_', ' ').title()}
 🕒 <b>Updated:</b> {token_info.get('last_updated', 'Unknown')}
 """
     
