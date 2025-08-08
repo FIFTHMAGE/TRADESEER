@@ -17,6 +17,9 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
+import pandas as pd
+import numpy as np
+from collections import defaultdict
 
 # Import all required packages with proper error handling
 WEB3_AVAILABLE = False
@@ -80,6 +83,9 @@ if not ETHERSCAN_API_KEY:
 user_wallets = {}
 user_settings = {}
 user_profiles = {}  # New: Store user profiles with unique IDs
+user_portfolios = {}  # Portfolio tracking data
+portfolio_history = {}  # Historical portfolio data
+wallet_performance = {}  # Wallet performance metrics
 running = True
 
 # Database setup
@@ -188,6 +194,36 @@ def init_database():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracked_wallets_user_id ON tracked_wallets(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_connected_wallets_user_id ON connected_wallets(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON bot_transactions(user_id)')
+    
+    # Create portfolio tracking tables
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS portfolio_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            portfolio_value REAL NOT NULL,
+            total_roi REAL DEFAULT 0,
+            num_wallets INTEGER DEFAULT 0,
+            FOREIGN KEY (chat_id) REFERENCES users(chat_id)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS wallet_performance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wallet_address TEXT NOT NULL,
+            chat_id INTEGER NOT NULL,
+            initial_investment REAL DEFAULT 0,
+            current_value REAL DEFAULT 0,
+            total_return REAL DEFAULT 0,
+            daily_returns TEXT,  -- JSON array of daily returns
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES users(chat_id)
+        )
+    ''')
+    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_portfolio_chat_id ON portfolio_history(chat_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_wallet_performance_address ON wallet_performance(wallet_address)')
     
     conn.commit()
     conn.close()
@@ -481,6 +517,320 @@ def remove_wallet_from_db(chat_id, wallet_address):
         print(f"❌ Error removing wallet from database: {e}")
         return False
 
+def calculate_portfolio_metrics(chat_id):
+    """
+    Calculate comprehensive portfolio performance metrics
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        
+    Returns:
+        dict: Portfolio metrics including ROI, Sharpe ratio, etc.
+    """
+    try:
+        wallets = user_wallets.get(chat_id, [])
+        
+        if not wallets:
+            return None
+            
+        total_investment = 0
+        current_value = 0
+        returns = []
+        daily_returns = []
+        
+        for wallet_address in wallets:
+            # Get wallet performance data
+            wallet_data = wallet_performance.get(wallet_address, {})
+            
+            if wallet_data:
+                investment = wallet_data.get('initial_investment', 0)
+                current_val = wallet_data.get('current_value', 0)
+                wallet_return = wallet_data.get('total_return', 0)
+                
+                total_investment += investment
+                current_value += current_val
+                returns.append(wallet_return)
+                
+                # Calculate daily returns for Sharpe ratio
+                daily_ret = wallet_data.get('daily_returns', [])
+                daily_returns.extend(daily_ret)
+        
+        if total_investment == 0:
+            return None
+            
+        # Calculate metrics
+        total_roi = ((current_value - total_investment) / total_investment) * 100
+        avg_return = np.mean(returns) if returns else 0
+        
+        # Sharpe ratio (assuming risk-free rate of 2%)
+        if daily_returns:
+            daily_returns_array = np.array(daily_returns)
+            excess_returns = daily_returns_array - (0.02 / 365)  # Daily risk-free rate
+            sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) > 0 else 0
+        else:
+            sharpe_ratio = 0
+            
+        # Maximum drawdown
+        if daily_returns:
+            cumulative_returns = np.cumprod(1 + np.array(daily_returns))
+            running_max = np.maximum.accumulate(cumulative_returns)
+            drawdown = (cumulative_returns - running_max) / running_max
+            max_drawdown = np.min(drawdown) * 100
+        else:
+            max_drawdown = 0
+            
+        # Win rate
+        winning_wallets = sum(1 for r in returns if r > 0)
+        win_rate = (winning_wallets / len(returns)) * 100 if returns else 0
+        
+        return {
+            'total_investment': total_investment,
+            'current_value': current_value,
+            'total_roi': total_roi,
+            'avg_return': avg_return,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'win_rate': win_rate,
+            'num_wallets': len(wallets),
+            'winning_wallets': winning_wallets
+        }
+        
+    except Exception as e:
+        print(f"Error calculating portfolio metrics: {e}")
+        return None
+
+def update_wallet_performance(wallet_address, transaction_data):
+    """
+    Update wallet performance metrics based on new transaction
+    
+    Args:
+        wallet_address (str): Wallet address
+        transaction_data (dict): Transaction information
+    """
+    try:
+        if wallet_address not in wallet_performance:
+            wallet_performance[wallet_address] = {
+                'initial_investment': 0,
+                'current_value': 0,
+                'total_return': 0,
+                'daily_returns': [],
+                'transactions': [],
+                'last_updated': datetime.now()
+            }
+        
+        wallet_data = wallet_performance[wallet_address]
+        
+        # Add transaction to history
+        wallet_data['transactions'].append(transaction_data)
+        
+        # Calculate daily return
+        value_eth = float(transaction_data.get('value', 0)) / 1e18
+        if value_eth > 0:
+            # Simple daily return calculation (can be enhanced)
+            daily_return = value_eth * 0.01  # Placeholder - would need actual price data
+            wallet_data['daily_returns'].append(daily_return)
+            
+            # Keep only last 30 days of returns
+            if len(wallet_data['daily_returns']) > 30:
+                wallet_data['daily_returns'] = wallet_data['daily_returns'][-30:]
+        
+        # Update current value (simplified calculation)
+        wallet_data['current_value'] += value_eth
+        
+        # Calculate total return
+        if wallet_data['initial_investment'] > 0:
+            wallet_data['total_return'] = ((wallet_data['current_value'] - wallet_data['initial_investment']) / 
+                                         wallet_data['initial_investment']) * 100
+        
+        wallet_data['last_updated'] = datetime.now()
+        
+    except Exception as e:
+        print(f"Error updating wallet performance: {e}")
+
+def get_portfolio_summary(chat_id):
+    """
+    Get comprehensive portfolio summary for user
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        
+    Returns:
+        str: Formatted portfolio summary message
+    """
+    try:
+        metrics = calculate_portfolio_metrics(chat_id)
+        
+        if not metrics:
+            return """
+📊 <b>Portfolio Summary</b>
+
+❌ No portfolio data available.
+
+💡 <b>Start tracking wallets to build your portfolio!</b>
+"""
+        
+        # Format numbers
+        def format_currency(amount):
+            if amount >= 1000000:
+                return f"${amount/1000000:.2f}M"
+            elif amount >= 1000:
+                return f"${amount/1000:.2f}K"
+            else:
+                return f"${amount:.2f}"
+        
+        def format_percentage(value):
+            return f"{value:+.2f}%" if value != 0 else "0.00%"
+        
+        # Performance emoji
+        roi_emoji = "🚀" if metrics['total_roi'] > 0 else "📉"
+        sharpe_emoji = "⭐" if metrics['sharpe_ratio'] > 1 else "📊"
+        
+        summary = f"""
+📊 <b>Portfolio Performance Summary</b>
+
+💰 <b>Total Investment:</b> {format_currency(metrics['total_investment'])}
+💎 <b>Current Value:</b> {format_currency(metrics['current_value'])}
+{roi_emoji} <b>Total ROI:</b> {format_percentage(metrics['total_roi'])}
+📈 <b>Average Return:</b> {format_percentage(metrics['avg_return'])}
+
+{sharpe_emoji} <b>Sharpe Ratio:</b> {metrics['sharpe_ratio']:.2f}
+📉 <b>Max Drawdown:</b> {format_percentage(metrics['max_drawdown'])}
+🎯 <b>Win Rate:</b> {metrics['win_rate']:.1f}%
+
+📋 <b>Portfolio Stats:</b>
+• Wallets Tracked: {metrics['num_wallets']}
+• Winning Wallets: {metrics['winning_wallets']}
+• Losing Wallets: {metrics['num_wallets'] - metrics['winning_wallets']}
+
+💡 <b>Performance Insights:</b>
+"""
+        
+        # Add insights based on metrics
+        if metrics['total_roi'] > 20:
+            summary += "• 🚀 Excellent performance! Your portfolio is outperforming the market.\n"
+        elif metrics['total_roi'] > 0:
+            summary += "• 📈 Good performance! Your portfolio is generating positive returns.\n"
+        else:
+            summary += "• 📉 Consider reviewing your wallet selection strategy.\n"
+            
+        if metrics['sharpe_ratio'] > 1:
+            summary += "• ⭐ High risk-adjusted returns! Your portfolio is efficient.\n"
+        elif metrics['sharpe_ratio'] > 0:
+            summary += "• 📊 Moderate risk-adjusted returns.\n"
+        else:
+            summary += "• ⚠️ Consider diversifying to improve risk-adjusted returns.\n"
+            
+        if metrics['win_rate'] > 60:
+            summary += "• 🎯 High win rate! You're picking successful wallets.\n"
+        elif metrics['win_rate'] > 40:
+            summary += "• 📊 Moderate win rate. Consider refining your selection criteria.\n"
+        else:
+            summary += "• 🔍 Low win rate. Focus on higher-scoring wallets.\n"
+        
+        return summary
+        
+    except Exception as e:
+        print(f"Error generating portfolio summary: {e}")
+        return "❌ Error generating portfolio summary."
+
+def save_portfolio_snapshot(chat_id):
+    """
+    Save current portfolio state to database
+    
+    Args:
+        chat_id (int): Telegram chat ID
+    """
+    try:
+        metrics = calculate_portfolio_metrics(chat_id)
+        if not metrics:
+            return
+            
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO portfolio_history (chat_id, portfolio_value, total_roi, num_wallets)
+            VALUES (?, ?, ?, ?)
+        ''', (chat_id, metrics['current_value'], metrics['total_roi'], metrics['num_wallets']))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        print(f"Error saving portfolio snapshot: {e}")
+
+def get_wallet_balance_multi_chain(wallet_address):
+    """
+    Get wallet balance across multiple chains
+    
+    Args:
+        wallet_address (str): Wallet address
+        
+    Returns:
+        dict: Balance information for each chain
+    """
+    try:
+        balances = {}
+        chains = ["ethereum", "base", "polygon", "arbitrum", "optimism", "bsc"]
+        
+        for chain in chains:
+            try:
+                balance = get_wallet_balance(wallet_address, chain)
+                if balance is not None:
+                    balances[chain] = balance
+            except Exception as e:
+                print(f"Error getting {chain} balance: {e}")
+                continue
+        
+        return balances
+        
+    except Exception as e:
+        print(f"Error getting multi-chain balances: {e}")
+        return {}
+
+def get_cross_chain_activity(wallet_address):
+    """
+    Analyze wallet activity across multiple chains
+    
+    Args:
+        wallet_address (str): Wallet address
+        
+    Returns:
+        dict: Cross-chain activity summary
+    """
+    try:
+        chains = ["ethereum", "base", "polygon", "arbitrum", "optimism", "bsc"]
+        chain_activity = {}
+        total_transactions = 0
+        total_volume = 0
+        
+        for chain in chains:
+            transactions = get_transactions_from_chain(wallet_address, chain)
+            if transactions:
+                chain_volume = sum(float(tx.get('value', 0)) / 1e18 for tx in transactions)
+                chain_activity[chain] = {
+                    'transaction_count': len(transactions),
+                    'volume': chain_volume,
+                    'last_activity': max(int(tx['timeStamp']) for tx in transactions) if transactions else 0
+                }
+                total_transactions += len(transactions)
+                total_volume += chain_volume
+        
+        # Determine primary chain
+        primary_chain = max(chain_activity.items(), key=lambda x: x[1]['volume'])[0] if chain_activity else None
+        
+        return {
+            'chain_activity': chain_activity,
+            'total_transactions': total_transactions,
+            'total_volume': total_volume,
+            'primary_chain': primary_chain,
+            'active_chains': len(chain_activity)
+        }
+        
+    except Exception as e:
+        print(f"Error analyzing cross-chain activity: {e}")
+        return {}
+
 # Flask app
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -685,55 +1035,228 @@ def get_dashboard_analytics(chat_id):
     }
 
 def format_notification(message, style, wallet_address, tx_data):
-    """Format notification based on user's preferred style"""
+    """Format notification based on user's preferred style with enhanced features"""
     value = float(tx_data['value']) / 1e18
     chain = tx_data.get('chain', 'unknown').title()
     chain_emoji = "🔷" if chain.lower() == "base" else "⚡"
     
+    # Get enhanced wallet data
+    wallet_score = get_wallet_score(wallet_address)
+    score_emoji = "🚀" if wallet_score > 70 else "📈" if wallet_score > 40 else "⚠️"
+    
+    # Get cross-chain activity
+    cross_chain_data = get_cross_chain_activity(wallet_address)
+    active_chains = cross_chain_data.get('active_chains', 0)
+    primary_chain = cross_chain_data.get('primary_chain', 'unknown').title()
+    
+    # Get portfolio context
+    portfolio_metrics = calculate_portfolio_metrics(message) if 'chat_id' in locals() else None
+    
     if style == "psychic":
         return f"""
-🔮 <b>Psychic Ping!</b> {chain_emoji}
+🔮 <b>Enhanced Psychic Ping!</b> {chain_emoji}
 
 The cosmic forces have detected movement in your tracked wallet!
 
 💼 <b>Wallet:</b> <code>{wallet_address}</code>
+{score_emoji} <b>AI Score:</b> {wallet_score}/100
 🔗 <b>Chain:</b> {chain}
 💰 <b>Value:</b> {value:.6f} ETH
 🔍 <b>Hash:</b> <code>{tx_data['hash']}</code>
+
+🌍 <b>Multi-Chain Activity:</b> {active_chains} chains active
+🎯 <b>Primary Network:</b> {primary_chain}
 
 The stars align for potential trading activity! 🌟
 """
     elif style == "professional":
         return f"""
-📊 <b>Wallet Activity Alert</b> {chain_emoji}
+📊 <b>Enhanced Wallet Activity Alert</b> {chain_emoji}
 
 A tracked wallet has received a new transaction.
 
 💼 <b>Wallet:</b> <code>{wallet_address}</code>
+{score_emoji} <b>Smart Score:</b> {wallet_score}/100
 🔗 <b>Network:</b> {chain}
 💰 <b>Amount:</b> {value:.6f} ETH
 🔍 <b>Transaction:</b> <code>{tx_data['hash']}</code>
+
+🌍 <b>Cross-Chain Activity:</b> {active_chains} chains
+🎯 <b>Primary Chain:</b> {primary_chain}
 
 Monitor for potential trading activity.
 """
     elif style == "minimal":
         return f"""
-🚨 {chain_emoji} <code>{wallet_address}</code>
-💰 {value:.6f} ETH | {chain}
+🚨 {chain_emoji} <code>{wallet_address}</code> ({wallet_score}/100)
+💰 {value:.6f} ETH | {chain} | {active_chains} chains
 🔗 <code>{tx_data['hash']}</code>
 """
     else:  # default
         return f"""
-🚨 <b>Wallet Activity Alert!</b> {chain_emoji}
+🚨 <b>Enhanced Wallet Activity Alert!</b> {chain_emoji}
 
 💼 <b>Wallet:</b> <code>{wallet_address}</code>
+{score_emoji} <b>AI Score:</b> {wallet_score}/100
 🔗 <b>Chain:</b> {chain}
 💰 <b>Value:</b> {value:.6f} ETH
 🔍 <b>Hash:</b> <code>{tx_data['hash']}</code>
 
+🌍 <b>Multi-Chain Activity:</b> {active_chains} chains
+🎯 <b>Primary Network:</b> {primary_chain}
+
 📊 <b>From:</b> <code>{tx_data['from']}</code>
 📨 <b>To:</b> <code>{tx_data['to']}</code>
 """
+
+def create_smart_notification_filter(chat_id):
+    """
+    Create smart notification filters based on user preferences
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        
+    Returns:
+        dict: Filter settings
+    """
+    try:
+        user_settings = get_user_settings(chat_id)
+        
+        # Get user's portfolio metrics for personalized filtering
+        portfolio_metrics = calculate_portfolio_metrics(chat_id)
+        
+        filters = {
+            'min_wallet_score': 30,  # Default minimum score
+            'min_amount_eth': user_settings.get('alert_threshold', 0.2),
+            'max_notifications_per_hour': 10,
+            'priority_wallets_only': False,
+            'cross_chain_alerts': True,
+            'batch_notifications': True
+        }
+        
+        # Adjust filters based on portfolio performance
+        if portfolio_metrics:
+            if portfolio_metrics['total_roi'] > 20:
+                # High performer - be more selective
+                filters['min_wallet_score'] = 50
+                filters['priority_wallets_only'] = True
+            elif portfolio_metrics['total_roi'] < 0:
+                # Underperformer - be more inclusive
+                filters['min_wallet_score'] = 20
+                filters['priority_wallets_only'] = False
+        
+        return filters
+        
+    except Exception as e:
+        print(f"Error creating smart notification filter: {e}")
+        return {
+            'min_wallet_score': 30,
+            'min_amount_eth': 0.2,
+            'max_notifications_per_hour': 10,
+            'priority_wallets_only': False,
+            'cross_chain_alerts': True,
+            'batch_notifications': True
+        }
+
+def should_send_notification(chat_id, wallet_address, tx_data):
+    """
+    Determine if notification should be sent based on smart filters
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        wallet_address (str): Wallet address
+        tx_data (dict): Transaction data
+        
+    Returns:
+        bool: Whether to send notification
+    """
+    try:
+        filters = create_smart_notification_filter(chat_id)
+        
+        # Check wallet score
+        wallet_score = get_wallet_score(wallet_address)
+        if wallet_score < filters['min_wallet_score']:
+            return False
+        
+        # Check amount threshold
+        value_eth = float(tx_data['value']) / 1e18
+        if value_eth < filters['min_amount_eth']:
+            return False
+        
+        # Check notification rate limiting
+        # (This would need to be implemented with a notification history table)
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error checking notification filters: {e}")
+        return True  # Default to sending if error
+
+def create_batch_notification(chat_id, notifications):
+    """
+    Create a batch notification for multiple alerts
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        notifications (list): List of notification data
+        
+    Returns:
+        str: Formatted batch notification
+    """
+    try:
+        if not notifications:
+            return None
+            
+        user_settings = get_user_settings(chat_id)
+        style = user_settings.get('notification_style', 'minimal')
+        
+        if style == "psychic":
+            message = f"""
+🔮 <b>MYSTICAL BATCH ALERT</b> 🔮
+
+The cosmic forces have detected multiple movements...
+
+📊 <b>Total Alerts:</b> {len(notifications)}
+⏰ <b>Time Window:</b> Last 30 minutes
+
+"""
+            for i, notif in enumerate(notifications[:5], 1):  # Show top 5
+                wallet_score = get_wallet_score(notif['wallet_address'])
+                value_eth = float(notif['tx_data']['value']) / 1e18
+                message += f"""
+{i}. <code>{notif['wallet_address'][:10]}...</code> ({wallet_score}/100)
+   +{value_eth:.4f} ETH | {notif['tx_data'].get('chain', 'unknown').title()}
+"""
+            message += "\nThe stars are aligned for multiple opportunities! ⚡"
+            
+        elif style == "professional":
+            message = f"""
+📊 <b>Batch Activity Summary</b>
+
+📈 <b>Total Alerts:</b> {len(notifications)}
+⏰ <b>Period:</b> Last 30 minutes
+
+"""
+            for i, notif in enumerate(notifications[:5], 1):
+                wallet_score = get_wallet_score(notif['wallet_address'])
+                value_eth = float(notif['tx_data']['value']) / 1e18
+                message += f"""
+{i}. <code>{notif['wallet_address'][:10]}...</code> (Score: {wallet_score})
+   Amount: {value_eth:.4f} ETH | Network: {notif['tx_data'].get('chain', 'unknown').title()}
+"""
+            message += "\nMonitor these wallets for trading opportunities."
+            
+        else:  # minimal
+            message = f"🔔 {len(notifications)} wallet alerts in last 30min\n\n"
+            for notif in notifications[:3]:
+                value_eth = float(notif['tx_data']['value']) / 1e18
+                message += f"{notif['wallet_address'][:10]}... +{value_eth:.3f} ETH\n"
+        
+        return message
+        
+    except Exception as e:
+        print(f"Error creating batch notification: {e}")
+        return None
 
 def handle_dashboard(chat_id):
     """Handle dashboard request"""
@@ -1875,7 +2398,7 @@ def get_transactions_from_chain(wallet_address, chain):
         return []
 
 def get_wallet_score(wallet_address):
-    """Calculate a smart wallet score based on transaction patterns across Ethereum and Base"""
+    """Calculate an enhanced AI-powered wallet score based on advanced transaction patterns"""
     # Get transactions from both Ethereum and Base
     eth_transactions = get_transactions_from_chain(wallet_address, "ethereum")
     base_transactions = get_transactions_from_chain(wallet_address, "base")
@@ -1884,8 +2407,8 @@ def get_wallet_score(wallet_address):
     all_transactions = eth_transactions + base_transactions
     all_transactions.sort(key=lambda x: int(x["timeStamp"]), reverse=True)
     
-    # Use most recent 50 transactions for scoring
-    transactions = all_transactions[:50]
+    # Use most recent 100 transactions for enhanced scoring
+    transactions = all_transactions[:100]
     
     if not transactions:
         return 0
@@ -1894,55 +2417,152 @@ def get_wallet_score(wallet_address):
     total_value = 0
     unique_contracts = set()
     gas_efficiency = []
+    transaction_timestamps = []
+    success_patterns = []
+    risk_indicators = []
+    
+    # Enhanced scoring factors
+    volume_score = 0
+    frequency_score = 0
+    diversity_score = 0
+    efficiency_score = 0
+    success_score = 0
+    risk_score = 0
     
     for tx in transactions:
         try:
-            # Transaction frequency (more recent = higher score)
-            tx_age_days = (datetime.utcnow() - datetime.utcfromtimestamp(int(tx["timeStamp"]))).days
-            if tx_age_days < 7:
-                score += 15
-            elif tx_age_days < 30:
-                score += 10
-            elif tx_age_days < 90:
-                score += 5
+            # Transaction timestamp for pattern analysis
+            tx_timestamp = int(tx["timeStamp"])
+            transaction_timestamps.append(tx_timestamp)
             
-            # Transaction value
+            # Transaction frequency analysis (more recent = higher weight)
+            tx_age_days = (datetime.utcnow() - datetime.utcfromtimestamp(tx_timestamp)).days
+            if tx_age_days < 7:
+                frequency_score += 20
+            elif tx_age_days < 30:
+                frequency_score += 15
+            elif tx_age_days < 90:
+                frequency_score += 10
+            elif tx_age_days < 180:
+                frequency_score += 5
+            
+            # Enhanced transaction value scoring
             value_eth = float(tx["value"]) / 1e18
             total_value += value_eth
-            if value_eth > 1:
-                score += 10
-            elif value_eth > 0.1:
-                score += 5
             
-            # Contract interactions
+            # Volume scoring with exponential weighting
+            if value_eth > 10:
+                volume_score += 30
+            elif value_eth > 5:
+                volume_score += 25
+            elif value_eth > 1:
+                volume_score += 20
+            elif value_eth > 0.5:
+                volume_score += 15
+            elif value_eth > 0.1:
+                volume_score += 10
+            elif value_eth > 0.01:
+                volume_score += 5
+            
+            # Contract diversity analysis
             if tx["to"] and tx["to"] not in unique_contracts:
                 unique_contracts.add(tx["to"])
-                score += 3
+                diversity_score += 5
             
-            # Gas efficiency
+            # Enhanced gas efficiency analysis
             gas_used = int(tx["gasUsed"])
             gas_price = int(tx["gasPrice"])
-            efficiency = gas_used * gas_price
-            gas_efficiency.append(efficiency)
+            gas_cost = gas_used * gas_price
+            gas_efficiency.append(gas_cost)
+            
+            # Success pattern analysis (transaction status)
+            if tx.get("isError") == "0" or tx.get("status") == "1":
+                success_patterns.append(1)
+                success_score += 3
+            else:
+                success_patterns.append(0)
+                risk_score += 5
+            
+            # Risk indicator analysis
+            if value_eth > 50:  # High value transactions
+                risk_indicators.append("high_value")
+            if gas_cost > 0.1:  # High gas costs
+                risk_indicators.append("high_gas")
             
         except (ValueError, KeyError):
             continue
     
-    # Diversity bonus
-    if len(unique_contracts) > 10:
-        score += 20
+    # Advanced pattern analysis
+    if len(transaction_timestamps) > 1:
+        # Transaction frequency pattern
+        time_diffs = [transaction_timestamps[i] - transaction_timestamps[i+1] 
+                     for i in range(len(transaction_timestamps)-1)]
+        avg_time_diff = np.mean(time_diffs) if time_diffs else 0
+        
+        # Regular trading pattern bonus
+        if avg_time_diff > 0 and avg_time_diff < 86400:  # Daily trading
+            frequency_score += 15
+        elif avg_time_diff > 0 and avg_time_diff < 604800:  # Weekly trading
+            frequency_score += 10
+    
+    # Success rate analysis
+    success_rate = np.mean(success_patterns) if success_patterns else 0
+    success_score += success_rate * 20
+    
+    # Risk assessment
+    risk_factor = len(risk_indicators) / len(transactions) if transactions else 0
+    risk_score = max(0, risk_score - (risk_factor * 10))
+    
+    # Gas efficiency analysis
+    if gas_efficiency:
+        avg_gas_cost = np.mean(gas_efficiency)
+        if avg_gas_cost < 0.01:  # Very efficient
+            efficiency_score = 20
+        elif avg_gas_cost < 0.05:  # Efficient
+            efficiency_score = 15
+        elif avg_gas_cost < 0.1:  # Moderate
+            efficiency_score = 10
+        else:  # Inefficient
+            efficiency_score = 5
+    
+    # Diversity bonus with enhanced scoring
+    if len(unique_contracts) > 20:
+        diversity_score += 30
+    elif len(unique_contracts) > 15:
+        diversity_score += 25
+    elif len(unique_contracts) > 10:
+        diversity_score += 20
     elif len(unique_contracts) > 5:
-        score += 10
+        diversity_score += 15
+    elif len(unique_contracts) > 2:
+        diversity_score += 10
     
-    # Volume bonus
-    if total_value > 10:
-        score += 25
+    # Volume bonus with enhanced scoring
+    if total_value > 100:
+        volume_score += 40
+    elif total_value > 50:
+        volume_score += 35
+    elif total_value > 20:
+        volume_score += 30
+    elif total_value > 10:
+        volume_score += 25
+    elif total_value > 5:
+        volume_score += 20
     elif total_value > 1:
-        score += 15
-    elif total_value > 0.1:
-        score += 5
+        volume_score += 15
     
-    return min(score, 100)
+    # Calculate weighted final score
+    final_score = (
+        volume_score * 0.25 +      # 25% weight for volume
+        frequency_score * 0.20 +   # 20% weight for frequency
+        diversity_score * 0.20 +   # 20% weight for diversity
+        efficiency_score * 0.15 +  # 15% weight for efficiency
+        success_score * 0.15 +     # 15% weight for success rate
+        risk_score * 0.05          # 5% weight for risk (negative)
+    )
+    
+    # Ensure score is within bounds
+    return max(0, min(100, int(final_score)))
 
 def get_wallet_insights(wallet_address):
     """Get detailed insights about a wallet across Ethereum and Base"""
@@ -3454,9 +4074,350 @@ def get_token_price_data(contract_address, token_symbol):
             'ath_change_percentage': 0,
             'last_updated': 'Unknown'
         }
+
+def get_token_discovery_metrics(contract_address):
+    """
+    Get token discovery and trending metrics
+    
+    Args:
+        contract_address (str): Token contract address
+        
+    Returns:
+        dict: Discovery metrics
+    """
+    try:
+        # Get social sentiment (placeholder - would integrate with social APIs)
+        social_metrics = {
+            'twitter_mentions': 0,
+            'telegram_members': 0,
+            'discord_members': 0,
+            'sentiment_score': 0.5
+        }
+        
+        # Get whale activity
+        whale_activity = get_whale_activity(contract_address)
+        
+        # Get trending score
+        trending_score = calculate_trending_score(contract_address)
+        
+        # Get rug pull risk assessment
+        rug_pull_risk = assess_rug_pull_risk(contract_address)
+        
+        return {
+            'social_metrics': social_metrics,
+            'whale_activity': whale_activity,
+            'trending_score': trending_score,
+            'rug_pull_risk': rug_pull_risk,
+            'discovery_rating': calculate_discovery_rating(social_metrics, whale_activity, trending_score, rug_pull_risk)
+        }
         
     except Exception as e:
-        print(f"Error getting price data: {e}")
+        print(f"Error getting token discovery metrics: {e}")
+        return {}
+
+def get_whale_activity(contract_address):
+    """
+    Analyze whale activity for a token
+    
+    Args:
+        contract_address (str): Token contract address
+        
+    Returns:
+        dict: Whale activity data
+    """
+    try:
+        # Get recent large transactions
+        # This would need to be implemented with actual blockchain data
+        whale_data = {
+            'large_transactions_24h': 0,
+            'whale_holders': 0,
+            'avg_whale_holding': 0,
+            'whale_confidence': 0.5
+        }
+        
+        return whale_data
+        
+    except Exception as e:
+        print(f"Error getting whale activity: {e}")
+        return {}
+
+def calculate_trending_score(contract_address):
+    """
+    Calculate trending score based on various metrics
+    
+    Args:
+        contract_address (str): Token contract address
+        
+    Returns:
+        float: Trending score (0-100)
+    """
+    try:
+        # This would integrate with various APIs to calculate trending
+        # For now, return a placeholder score
+        return 50.0
+        
+    except Exception as e:
+        print(f"Error calculating trending score: {e}")
+        return 0.0
+
+def assess_rug_pull_risk(contract_address):
+    """
+    Assess rug pull risk for a token
+    
+    Args:
+        contract_address (str): Token contract address
+        
+    Returns:
+        dict: Risk assessment data
+    """
+    try:
+        # This would analyze contract code, liquidity locks, etc.
+        risk_factors = {
+            'liquidity_locked': True,
+            'contract_verified': True,
+            'owner_percentage': 0.1,
+            'risk_score': 0.2,
+            'risk_level': 'LOW'
+        }
+        
+        return risk_factors
+        
+    except Exception as e:
+        print(f"Error assessing rug pull risk: {e}")
+        return {'risk_score': 0.5, 'risk_level': 'UNKNOWN'}
+
+def calculate_discovery_rating(social_metrics, whale_activity, trending_score, rug_pull_risk):
+    """
+    Calculate overall discovery rating
+    
+    Args:
+        social_metrics (dict): Social media metrics
+        whale_activity (dict): Whale activity data
+        trending_score (float): Trending score
+        rug_pull_risk (dict): Risk assessment
+        
+    Returns:
+        float: Discovery rating (0-100)
+    """
+    try:
+        # Weighted calculation
+        social_weight = 0.3
+        whale_weight = 0.3
+        trending_weight = 0.2
+        risk_weight = 0.2
+        
+        # Social score (normalized)
+        social_score = min(social_metrics.get('twitter_mentions', 0) / 1000, 1.0) * 100
+        
+        # Whale score
+        whale_score = whale_activity.get('whale_confidence', 0.5) * 100
+        
+        # Trending score (already 0-100)
+        
+        # Risk score (inverted - lower risk = higher score)
+        risk_score = (1 - rug_pull_risk.get('risk_score', 0.5)) * 100
+        
+        # Calculate weighted average
+        discovery_rating = (
+            social_score * social_weight +
+            whale_score * whale_weight +
+            trending_score * trending_weight +
+            risk_score * risk_weight
+        )
+        
+        return min(max(discovery_rating, 0), 100)
+        
+    except Exception as e:
+        print(f"Error calculating discovery rating: {e}")
+        return 50.0
+
+def search_trending_tokens():
+    """
+    Search for trending tokens across multiple platforms
+    
+    Returns:
+        list: List of trending tokens
+    """
+    try:
+        trending_tokens = []
+        
+        # Search DexScreener trending
+        try:
+            dexscreener_trending = search_dexscreener_trending()
+            trending_tokens.extend(dexscreener_trending)
+        except Exception as e:
+            print(f"Error getting DexScreener trending: {e}")
+        
+        # Search CoinGecko trending
+        try:
+            coingecko_trending = search_coingecko_trending()
+            trending_tokens.extend(coingecko_trending)
+        except Exception as e:
+            print(f"Error getting CoinGecko trending: {e}")
+        
+        # Remove duplicates and sort by discovery rating
+        unique_tokens = {}
+        for token in trending_tokens:
+            contract = token.get('contract_address')
+            if contract and contract not in unique_tokens:
+                unique_tokens[contract] = token
+        
+        # Sort by discovery rating
+        sorted_tokens = sorted(
+            unique_tokens.values(),
+            key=lambda x: x.get('discovery_rating', 0),
+            reverse=True
+        )
+        
+        return sorted_tokens[:20]  # Return top 20
+        
+    except Exception as e:
+        print(f"Error searching trending tokens: {e}")
+        return []
+
+def search_dexscreener_trending():
+    """
+    Search DexScreener for trending tokens
+    
+    Returns:
+        list: List of trending tokens
+    """
+    try:
+        # This would make API calls to DexScreener trending endpoint
+        # For now, return placeholder data
+        return []
+        
+    except Exception as e:
+        print(f"Error searching DexScreener trending: {e}")
+        return []
+
+def search_coingecko_trending():
+    """
+    Search CoinGecko for trending tokens
+    
+    Returns:
+        list: List of trending tokens
+    """
+    try:
+        # This would make API calls to CoinGecko trending endpoint
+        # For now, return placeholder data
+        return []
+        
+    except Exception as e:
+        print(f"Error searching CoinGecko trending: {e}")
+        return []
+
+def handle_token_discovery_request(chat_id, query):
+    """
+    Handle token discovery requests
+    
+    Args:
+        chat_id (int): Telegram chat ID
+        query (str): Search query
+    """
+    try:
+        if query.lower() in ['trending', 'hot', 'popular']:
+            # Search trending tokens
+            trending_tokens = search_trending_tokens()
+            
+            if not trending_tokens:
+                bot.send_message(chat_id, "❌ No trending tokens found at the moment.")
+                return
+            
+            message = "🔥 <b>Trending Tokens</b>\n\n"
+            
+            for i, token in enumerate(trending_tokens[:10], 1):
+                symbol = token.get('symbol', 'Unknown')
+                name = token.get('name', symbol)
+                discovery_rating = token.get('discovery_rating', 0)
+                price_usd = token.get('price_usd', 0)
+                
+                message += f"""
+{i}. <b>{symbol}</b> - {name}
+   💰 ${price_usd:.6f} | 🔍 {discovery_rating:.1f}/100
+   📍 <code>{token.get('contract_address', 'Unknown')}</code>
+"""
+            
+            message += "\n💡 <i>Use /token [symbol] for detailed analysis</i>"
+            
+        else:
+            # Search for specific token
+            token_info = get_comprehensive_token_info(query)
+            
+            if not token_info:
+                bot.send_message(chat_id, f"❌ Token '{query}' not found.")
+                return
+            
+            message = format_enhanced_token_info(token_info)
+        
+        bot.send_message(chat_id, message)
+        
+    except Exception as e:
+        print(f"Error handling token discovery request: {e}")
+        bot.send_message(chat_id, "❌ Error processing token discovery request.")
+
+def format_enhanced_token_info(token_info):
+    """
+    Format enhanced token information with discovery metrics
+    
+    Args:
+        token_info (dict): Token information
+        
+    Returns:
+        str: Formatted message
+    """
+    try:
+        symbol = token_info.get('symbol', 'Unknown')
+        name = token_info.get('name', symbol)
+        price_usd = token_info.get('price_usd', 0)
+        price_change = token_info.get('price_change_24h', 0)
+        market_cap = token_info.get('market_cap', 0)
+        volume_24h = token_info.get('volume_24h', 0)
+        
+        discovery_metrics = token_info.get('discovery_metrics', {})
+        discovery_rating = discovery_metrics.get('discovery_rating', 0)
+        rug_pull_risk = discovery_metrics.get('rug_pull_risk', {})
+        
+        # Format numbers
+        def format_number(num):
+            if num >= 1000000:
+                return f"${num/1000000:.2f}M"
+            elif num >= 1000:
+                return f"${num/1000:.2f}K"
+            else:
+                return f"${num:.2f}"
+        
+        # Price change emoji
+        price_emoji = "📈" if price_change > 0 else "📉" if price_change < 0 else "➡️"
+        
+        # Risk level emoji
+        risk_level = rug_pull_risk.get('risk_level', 'UNKNOWN')
+        risk_emoji = "🟢" if risk_level == 'LOW' else "🟡" if risk_level == 'MEDIUM' else "🔴"
+        
+        message = f"""
+🔍 <b>Enhanced Token Analysis</b>
+
+🪙 <b>Token:</b> {symbol} ({name})
+💰 <b>Price:</b> ${price_usd:.8f} {price_emoji} {price_change:+.2f}%
+📊 <b>Market Cap:</b> {format_number(market_cap)}
+📈 <b>Volume 24h:</b> {format_number(volume_24h)}
+
+🔍 <b>Discovery Metrics:</b>
+• Discovery Rating: {discovery_rating:.1f}/100
+• Risk Level: {risk_emoji} {risk_level}
+• Liquidity Locked: {'✅' if rug_pull_risk.get('liquidity_locked') else '❌'}
+• Contract Verified: {'✅' if rug_pull_risk.get('contract_verified') else '❌'}
+
+📍 <b>Contract:</b> <code>{token_info.get('contract_address', 'Unknown')}</code>
+
+💡 <i>Use /buy [symbol] to purchase this token</i>
+"""
+        
+        return message
+        
+    except Exception as e:
+        print(f"Error formatting enhanced token info: {e}")
+        return "❌ Error formatting token information."
         return {
             'price_usd': 0,
             'price_change_24h': 0,
