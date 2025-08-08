@@ -120,7 +120,12 @@ def test_comprehensive_token_info():
                 print(f"   Name: {token_info.get('name', 'Unknown')}")
                 print(f"   Symbol: {token_info.get('symbol', 'Unknown')}")
                 print(f"   Contract: {token_info.get('contract_address', 'Unknown')}")
-                print(f"   Price: ${token_info.get('price_usd', 0):.6f}")
+                price = token_info.get('price_usd', 0)
+                try:
+                    price_float = float(price) if price else 0
+                    print(f"   Price: ${price_float:.6f}")
+                except (ValueError, TypeError):
+                    print(f"   Price: ${price}")
                 print(f"   Source: {token_info.get('source', 'Unknown')}")
                 
                 # Test message formatting
@@ -132,11 +137,19 @@ def test_comprehensive_token_info():
                 if source == "dexscreener":
                     liquidity = token_info.get('liquidity', 0)
                     dex = token_info.get('dex', '')
-                    print(f"   Liquidity: ${liquidity:,.0f}")
+                    try:
+                        liquidity_float = float(liquidity) if liquidity else 0
+                        print(f"   Liquidity: ${liquidity_float:,.0f}")
+                    except (ValueError, TypeError):
+                        print(f"   Liquidity: ${liquidity}")
                     print(f"   DEX: {dex}")
                 elif source == "pumpfun":
                     holders = token_info.get('holders', 0)
-                    print(f"   Holders: {holders:,}")
+                    try:
+                        holders_int = int(holders) if holders else 0
+                        print(f"   Holders: {holders_int:,}")
+                    except (ValueError, TypeError):
+                        print(f"   Holders: {holders}")
                 
                 passed += 1
             else:
@@ -177,7 +190,12 @@ def test_external_api_integration():
         print(f"✅ DexScreener contract lookup successful:")
         print(f"   Symbol: {dex_info.get('symbol', 'Unknown')}")
         print(f"   Name: {dex_info.get('name', 'Unknown')}")
-        print(f"   Price: ${dex_info.get('price', 0):.6f}")
+        price = dex_info.get('price', 0)
+        try:
+            price_float = float(price) if price else 0
+            print(f"   Price: ${price_float:.6f}")
+        except (ValueError, TypeError):
+            print(f"   Price: ${price}")
         print(f"   DEX: {dex_info.get('dex', 'Unknown')}")
     else:
         print(f"⚠️ DexScreener contract lookup failed (may be rate limited)")
@@ -188,7 +206,12 @@ def test_external_api_integration():
         print(f"✅ DexScreener search successful:")
         print(f"   Symbol: {search_result.get('symbol', 'Unknown')}")
         print(f"   Address: {search_result.get('address', 'Unknown')}")
-        print(f"   Price: ${search_result.get('price', 0):.6f}")
+        price = search_result.get('price', 0)
+        try:
+            price_float = float(price) if price else 0
+            print(f"   Price: ${price_float:.6f}")
+        except (ValueError, TypeError):
+            print(f"   Price: ${price}")
     else:
         print(f"⚠️ DexScreener search failed (may be rate limited)")
     
@@ -199,7 +222,12 @@ def test_external_api_integration():
         print(f"✅ Pump.fun search successful:")
         print(f"   Symbol: {pump_result.get('symbol', 'Unknown')}")
         print(f"   Address: {pump_result.get('address', 'Unknown')}")
-        print(f"   Price: ${pump_result.get('price', 0):.6f}")
+        price = pump_result.get('price', 0)
+        try:
+            price_float = float(price) if price else 0
+            print(f"   Price: ${price_float:.6f}")
+        except (ValueError, TypeError):
+            print(f"   Price: ${price}")
         print(f"   Holders: {pump_result.get('holders', 0):,}")
     else:
         print(f"⚠️ Pump.fun search failed (may be rate limited)")

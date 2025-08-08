@@ -2511,72 +2511,9 @@ POPULAR_TOKENS = {
     "btt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
     "leo": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
     "cake": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "doge": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "shib": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "pepe": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "floki": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "bonk": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "wojak": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "meme": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "chad": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "based": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "degen": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "moon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "rocket": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "elon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "inu": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "cat": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "dog": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "baby": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "safe": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "moon": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "star": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "gem": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "diamond": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "gold": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "silver": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "platinum": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "palladium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "copper": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "iron": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "steel": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "aluminum": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "nickel": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "zinc": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "lead": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "tin": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "titanium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "tungsten": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "cobalt": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "lithium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "uranium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "plutonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "thorium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "radium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "polonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "americium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "curium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "berkelium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "californium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "einsteinium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "fermium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "mendelevium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "nobelium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "lawrencium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "rutherfordium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "dubnium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "seaborgium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "bohrium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "hassium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "meitnerium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "darmstadtium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "roentgenium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "copernicium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "nihonium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "flerovium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "moscovium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "livermorium": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
-    "tennessine": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
+    # Note: DOGE and SHIB are found via DexScreener API
+    # Note: PEPE, DOGE, SHIB and other meme tokens are found via DexScreener API
+    # Removing placeholder addresses to allow external API discovery
     "oganesson": "0x7D49a065D17d6d4a55dc0814997B7c4C8C8C8C8C8",
 }
 
@@ -2612,8 +2549,8 @@ def resolve_token_input(token_input):
         return token_input, "Unknown", "contract_address"
     
     # Check our popular tokens database first
-    if token_input.upper() in POPULAR_TOKENS:
-        return POPULAR_TOKENS[token_input.upper()], token_input.upper(), "popular_tokens"
+    if token_input.lower() in POPULAR_TOKENS:
+        return POPULAR_TOKENS[token_input.lower()], token_input.upper(), "popular_tokens"
     
     # Try DexScreener for broader token discovery
     dex_info = search_token_on_dexscreener(token_input)
