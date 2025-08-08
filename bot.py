@@ -17,9 +17,8 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import logging
-import pandas as pd
-import numpy as np
 from collections import defaultdict
+import statistics
 
 # Import all required packages with proper error handling
 WEB3_AVAILABLE = False
@@ -560,22 +559,35 @@ def calculate_portfolio_metrics(chat_id):
             
         # Calculate metrics
         total_roi = ((current_value - total_investment) / total_investment) * 100
-        avg_return = np.mean(returns) if returns else 0
+        avg_return = statistics.mean(returns) if returns else 0
         
         # Sharpe ratio (assuming risk-free rate of 2%)
         if daily_returns:
-            daily_returns_array = np.array(daily_returns)
-            excess_returns = daily_returns_array - (0.02 / 365)  # Daily risk-free rate
-            sharpe_ratio = np.mean(excess_returns) / np.std(excess_returns) if np.std(excess_returns) > 0 else 0
+            excess_returns = [ret - (0.02 / 365) for ret in daily_returns]  # Daily risk-free rate
+            if len(excess_returns) > 1:
+                mean_excess = statistics.mean(excess_returns)
+                std_excess = statistics.stdev(excess_returns) if len(excess_returns) > 1 else 0
+                sharpe_ratio = mean_excess / std_excess if std_excess > 0 else 0
+            else:
+                sharpe_ratio = 0
         else:
             sharpe_ratio = 0
             
         # Maximum drawdown
         if daily_returns:
-            cumulative_returns = np.cumprod(1 + np.array(daily_returns))
-            running_max = np.maximum.accumulate(cumulative_returns)
-            drawdown = (cumulative_returns - running_max) / running_max
-            max_drawdown = np.min(drawdown) * 100
+            cumulative_returns = []
+            running_max = []
+            current_cumulative = 1.0
+            current_max = 1.0
+            
+            for ret in daily_returns:
+                current_cumulative *= (1 + ret)
+                current_max = max(current_max, current_cumulative)
+                cumulative_returns.append(current_cumulative)
+                running_max.append(current_max)
+            
+            drawdowns = [(cum - max_val) / max_val for cum, max_val in zip(cumulative_returns, running_max)]
+            max_drawdown = min(drawdowns) * 100 if drawdowns else 0
         else:
             max_drawdown = 0
             
@@ -2497,7 +2509,7 @@ def get_wallet_score(wallet_address):
         # Transaction frequency pattern
         time_diffs = [transaction_timestamps[i] - transaction_timestamps[i+1] 
                      for i in range(len(transaction_timestamps)-1)]
-        avg_time_diff = np.mean(time_diffs) if time_diffs else 0
+        avg_time_diff = statistics.mean(time_diffs) if time_diffs else 0
         
         # Regular trading pattern bonus
         if avg_time_diff > 0 and avg_time_diff < 86400:  # Daily trading
@@ -2506,7 +2518,7 @@ def get_wallet_score(wallet_address):
             frequency_score += 10
     
     # Success rate analysis
-    success_rate = np.mean(success_patterns) if success_patterns else 0
+    success_rate = statistics.mean(success_patterns) if success_patterns else 0
     success_score += success_rate * 20
     
     # Risk assessment
@@ -2515,7 +2527,7 @@ def get_wallet_score(wallet_address):
     
     # Gas efficiency analysis
     if gas_efficiency:
-        avg_gas_cost = np.mean(gas_efficiency)
+        avg_gas_cost = statistics.mean(gas_efficiency)
         if avg_gas_cost < 0.01:  # Very efficient
             efficiency_score = 20
         elif avg_gas_cost < 0.05:  # Efficient
