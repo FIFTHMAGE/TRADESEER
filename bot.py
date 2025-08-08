@@ -961,14 +961,18 @@ def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, passw
         return None, "Wallet features not available"
     
     try:
-        # Get encrypted private key
+        # Get user and encrypted private key
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return None, "User not found"
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
             SELECT encrypted_private_key, salt 
             FROM wallet_keys 
-            WHERE chat_id = ? AND wallet_address = ?
-        ''', (chat_id, wallet_address))
+            WHERE user_id = ? AND wallet_address = ?
+        ''', (user['user_id'], wallet_address))
         row = cursor.fetchone()
         conn.close()
         
@@ -997,9 +1001,9 @@ def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, passw
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO bot_transactions 
-                (chat_id, wallet_address, transaction_type, token_address, amount, tx_hash, chain, status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (chat_id, wallet_address, "swap", token_address, amount_eth, tx_hash, "base", "simulated"))
+                (user_id, chat_id, wallet_address, transaction_type, token_address, amount, tx_hash, chain, status) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user['user_id'], chat_id, wallet_address, "swap", token_address, amount_eth, tx_hash, "base", "simulated"))
             conn.commit()
             conn.close()
             
@@ -1079,9 +1083,9 @@ def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, passw
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO bot_transactions 
-            (chat_id, wallet_address, transaction_type, token_address, amount, tx_hash, chain, status) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (chat_id, wallet_address, "swap", token_address, amount_eth, tx_hash.hex(), "base", "pending"))
+            (user_id, chat_id, wallet_address, transaction_type, token_address, amount, tx_hash, chain, status) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user['user_id'], chat_id, wallet_address, "swap", token_address, amount_eth, tx_hash.hex(), "base", "pending"))
         conn.commit()
         conn.close()
         
@@ -1235,6 +1239,132 @@ To create a new wallet, use this format:
 """
             bot.send_message(chat_id, message)
     
+    elif "connect wallet" in text_lower or "import wallet" in text_lower:
+        # Extract private key and wallet name
+        import re
+        
+        # Look for private key pattern (0x followed by 64 hex characters)
+        private_key_match = re.search(r'0x[a-fA-F0-9]{64}', text)
+        
+        if not private_key_match:
+            bot.send_message(chat_id, """
+🔗 <b>Connect Existing Wallet</b>
+
+To import an existing wallet, use this format:
+<code>connect wallet 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef name:MyWallet password:MyPassword123</code>
+
+<b>Requirements:</b>
+• Private Key: Your wallet's private key (0x + 64 hex characters)
+• Name: Any name for your wallet
+• Password: Strong password to encrypt the private key (min 8 characters)
+
+<b>Example:</b>
+<code>connect wallet 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef name:MyMainWallet password:SecurePass123!</code>
+
+⚠️ <b>Security:</b> 
+• Your private key will be encrypted with your password
+• Never share your private key or password
+• Only use wallets you own
+""")
+            return
+        
+        private_key = private_key_match.group(0)
+        
+        # Extract wallet name and password
+        name_match = re.search(r'name[:\s]+([^\s]+)', text, re.IGNORECASE)
+        password_match = re.search(r'password[:\s]+([^\s]+)', text, re.IGNORECASE)
+        
+        if not name_match or not password_match:
+            bot.send_message(chat_id, """
+❌ <b>Missing Information</b>
+
+Please provide both wallet name and password:
+<code>connect wallet [private_key] name:MyWallet password:MyPassword123</code>
+
+<b>Example:</b>
+<code>connect wallet 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef name:MyMainWallet password:SecurePass123!</code>
+""")
+            return
+        
+        wallet_name = name_match.group(1)
+        password = password_match.group(1)
+        
+        if len(password) < 8:
+            bot.send_message(chat_id, "❌ Password must be at least 8 characters long")
+            return
+        
+        # Validate private key and get wallet address
+        try:
+            if not ACCOUNT_AVAILABLE:
+                bot.send_message(chat_id, "❌ Account features not available - missing eth_account dependency")
+                return
+            
+            # Create account from private key
+            account = Account.from_key(private_key)
+            wallet_address = account.address
+            
+            # Check if wallet is already connected
+            existing_wallets = get_user_wallets(chat_id)
+            for existing_address, _, _ in existing_wallets:
+                if existing_address.lower() == wallet_address.lower():
+                    bot.send_message(chat_id, f"⚠️ Wallet <code>{wallet_address}</code> is already connected!")
+                    return
+            
+            # Encrypt private key
+            encrypted_key, salt = encrypt_private_key(private_key, password)
+            
+            # Save to database
+            user = get_user_by_chat_id(chat_id)
+            if not user:
+                bot.send_message(chat_id, "❌ User not found. Please start the bot first with /start")
+                return
+            
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            
+            # Save connected wallet
+            cursor.execute('''
+                INSERT OR REPLACE INTO connected_wallets 
+                (user_id, chat_id, wallet_address, wallet_name, is_active) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user['user_id'], chat_id, wallet_address, wallet_name, True))
+            
+            # Save encrypted private key
+            cursor.execute('''
+                INSERT OR REPLACE INTO wallet_keys 
+                (user_id, chat_id, wallet_address, encrypted_private_key, salt) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user['user_id'], chat_id, wallet_address, encrypted_key, salt))
+            
+            conn.commit()
+            conn.close()
+            
+            # Get wallet balance
+            balance = get_wallet_balance(wallet_address)
+            balance_str = f"{balance:.6f} ETH" if balance is not None else "Unknown"
+            
+            message = f"""
+✅ <b>Wallet Connected Successfully!</b>
+
+🏷️ <b>Name:</b> {wallet_name}
+📍 <b>Address:</b> <code>{wallet_address}</code>
+💰 <b>Balance:</b> {balance_str}
+🔗 <b>Network:</b> Base Network
+
+🔐 <b>Security:</b>
+• Private key encrypted with your password
+• Wallet ready for trading
+• Use "my wallets" to see all connected wallets
+
+💡 <b>Next Steps:</b>
+• Use "swap [token] [amount]" to buy tokens
+• Use "my wallets" to see all your wallets
+"""
+            bot.send_message(chat_id, message)
+            
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Error connecting wallet: {str(e)}")
+    
     elif "my wallets" in text_lower or "list wallets" in text_lower:
         wallets = get_user_wallets(chat_id)
         
@@ -1246,7 +1376,7 @@ You haven't connected any wallets yet.
 
 <b>Options:</b>
 • Create new wallet: "create wallet name:MyWallet password:MyPass123"
-• Import existing wallet: "connect wallet [private_key]"
+• Import existing wallet: "connect wallet [private_key] name:MyWallet password:MyPass123"
 
 💡 <b>Tip:</b> Start with creating a new wallet!
 """)
