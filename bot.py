@@ -4086,6 +4086,20 @@ def get_token_price_data(contract_address, token_symbol):
             'ath_change_percentage': 0,
             'last_updated': 'Unknown'
         }
+        
+    except Exception as e:
+        print(f"Error getting token price data: {e}")
+        return {
+            'price_usd': 0,
+            'price_change_24h': 0,
+            'market_cap': 0,
+            'volume_24h': 0,
+            'circulating_supply': 0,
+            'total_supply': 0,
+            'ath': 0,
+            'ath_change_percentage': 0,
+            'last_updated': 'Unknown'
+        }
 
 def get_token_discovery_metrics(contract_address):
     """
