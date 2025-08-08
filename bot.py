@@ -79,6 +79,7 @@ if not ETHERSCAN_API_KEY:
 # Global storage
 user_wallets = {}
 user_settings = {}
+user_profiles = {}  # New: Store user profiles with unique IDs
 running = True
 
 # Database setup
@@ -93,23 +94,43 @@ def init_database():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
+    # Create users table for unique user management
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            user_type TEXT DEFAULT 'regular',
+            preferences JSON
+        )
+    ''')
+    
     # Create tables
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tracked_wallets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
             wallet_address TEXT NOT NULL,
             date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(chat_id, wallet_address)
+            UNIQUE(user_id, wallet_address),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_settings (
-            chat_id INTEGER PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
+            chat_id INTEGER NOT NULL,
             alert_threshold REAL DEFAULT 0.2,
             notification_style TEXT DEFAULT 'default',
-            auto_score BOOLEAN DEFAULT 1
+            auto_score BOOLEAN DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
@@ -117,12 +138,14 @@ def init_database():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS connected_wallets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
             wallet_address TEXT NOT NULL,
             wallet_name TEXT,
             is_active BOOLEAN DEFAULT 1,
             date_connected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(chat_id, wallet_address)
+            UNIQUE(user_id, wallet_address),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
@@ -130,12 +153,14 @@ def init_database():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS wallet_keys (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
             wallet_address TEXT NOT NULL,
             encrypted_private_key TEXT NOT NULL,
             salt TEXT NOT NULL,
             date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(chat_id, wallet_address)
+            UNIQUE(user_id, wallet_address),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
@@ -143,6 +168,7 @@ def init_database():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bot_transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
             wallet_address TEXT NOT NULL,
             transaction_type TEXT NOT NULL,
@@ -152,13 +178,239 @@ def init_database():
             tx_hash TEXT,
             chain TEXT DEFAULT 'base',
             status TEXT DEFAULT 'pending',
-            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     ''')
     
+    # Create indexes for better performance
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracked_wallets_user_id ON tracked_wallets(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_connected_wallets_user_id ON connected_wallets(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON bot_transactions(user_id)')
+    
     conn.commit()
     conn.close()
-    print("✅ Database initialized with wallet connection support")
+    print("✅ Database initialized with enhanced user management system")
+
+def get_or_create_user(chat_id, username=None, first_name=None, last_name=None):
+    """Get existing user or create new user with unique ID"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute('SELECT user_id, username, first_name, last_name FROM users WHERE chat_id = ?', (chat_id,))
+        user = cursor.fetchone()
+        
+        if user:
+            # Update last activity
+            cursor.execute('UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE chat_id = ?', (chat_id,))
+            conn.commit()
+            conn.close()
+            
+            user_id, username, first_name, last_name = user
+            return {
+                'user_id': user_id,
+                'chat_id': chat_id,
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'is_new': False
+            }
+        else:
+            # Create new user
+            cursor.execute('''
+                INSERT INTO users (chat_id, username, first_name, last_name) 
+                VALUES (?, ?, ?, ?)
+            ''', (chat_id, username, first_name, last_name))
+            
+            user_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            print(f"✅ Created new user: ID {user_id}, Chat ID {chat_id}")
+            return {
+                'user_id': user_id,
+                'chat_id': chat_id,
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'is_new': True
+            }
+            
+    except Exception as e:
+        print(f"❌ Error in get_or_create_user: {e}")
+        conn.close()
+        return None
+
+def get_user_by_chat_id(chat_id):
+    """Get user information by chat_id"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id, username, first_name, last_name FROM users WHERE chat_id = ?', (chat_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if user:
+            user_id, username, first_name, last_name = user
+            return {
+                'user_id': user_id,
+                'chat_id': chat_id,
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Error getting user by chat_id: {e}")
+        return None
+
+def update_user_activity(chat_id):
+    """Update user's last activity timestamp"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE chat_id = ?', (chat_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error updating user activity: {e}")
+
+def migrate_existing_users():
+    """Migrate existing users from old database structure to new user ID system"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if users table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        users_table_exists = cursor.fetchone() is not None
+        
+        if not users_table_exists:
+            print("🔄 Users table doesn't exist - database will be created with new structure")
+            conn.close()
+            return
+        
+        # Check if we need to migrate (look for tracked_wallets without user_id)
+        cursor.execute("PRAGMA table_info(tracked_wallets)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        if 'user_id' not in columns:
+            print("🔄 Database structure is up to date")
+            conn.close()
+            return
+        
+        # Check if there are any existing records in tracked_wallets
+        cursor.execute("SELECT COUNT(*) FROM tracked_wallets")
+        existing_records = cursor.fetchone()[0]
+        
+        if existing_records == 0:
+            print("✅ No existing data to migrate")
+            conn.close()
+            return
+        
+        # Find existing chat_ids that don't have user records
+        cursor.execute('''
+            SELECT DISTINCT tw.chat_id 
+            FROM tracked_wallets tw 
+            LEFT JOIN users u ON tw.chat_id = u.chat_id 
+            WHERE u.chat_id IS NULL
+        ''')
+        orphaned_chat_ids = cursor.fetchall()
+        
+        if not orphaned_chat_ids:
+            print("✅ No orphaned data found - migration complete")
+            conn.close()
+            return
+        
+        print(f"🔄 Found {len(orphaned_chat_ids)} chat_ids to migrate...")
+        
+        migrated_count = 0
+        for (chat_id,) in orphaned_chat_ids:
+            try:
+                # Create user record for orphaned chat_id
+                cursor.execute('''
+                    INSERT INTO users (chat_id, username, first_name, last_name) 
+                    VALUES (?, ?, ?, ?)
+                ''', (chat_id, None, None, None))
+                
+                user_id = cursor.lastrowid
+                
+                # Update tracked_wallets to include user_id
+                cursor.execute('''
+                    UPDATE tracked_wallets 
+                    SET user_id = ? 
+                    WHERE chat_id = ?
+                ''', (user_id, chat_id))
+                
+                # Update user_settings to include user_id (if table exists)
+                try:
+                    cursor.execute("PRAGMA table_info(user_settings)")
+                    settings_columns = [column[1] for column in cursor.fetchall()]
+                    if 'user_id' in settings_columns:
+                        cursor.execute('''
+                            UPDATE user_settings 
+                            SET user_id = ? 
+                            WHERE chat_id = ?
+                        ''', (user_id, chat_id))
+                except Exception as e:
+                    print(f"⚠️ Could not update user_settings: {e}")
+                
+                # Update connected_wallets to include user_id (if table exists)
+                try:
+                    cursor.execute("PRAGMA table_info(connected_wallets)")
+                    connected_columns = [column[1] for column in cursor.fetchall()]
+                    if 'user_id' in connected_columns:
+                        cursor.execute('''
+                            UPDATE connected_wallets 
+                            SET user_id = ? 
+                            WHERE chat_id = ?
+                        ''', (user_id, chat_id))
+                except Exception as e:
+                    print(f"⚠️ Could not update connected_wallets: {e}")
+                
+                # Update wallet_keys to include user_id (if table exists)
+                try:
+                    cursor.execute("PRAGMA table_info(wallet_keys)")
+                    keys_columns = [column[1] for column in cursor.fetchall()]
+                    if 'user_id' in keys_columns:
+                        cursor.execute('''
+                            UPDATE wallet_keys 
+                            SET user_id = ? 
+                            WHERE chat_id = ?
+                        ''', (user_id, chat_id))
+                except Exception as e:
+                    print(f"⚠️ Could not update wallet_keys: {e}")
+                
+                # Update bot_transactions to include user_id (if table exists)
+                try:
+                    cursor.execute("PRAGMA table_info(bot_transactions)")
+                    tx_columns = [column[1] for column in cursor.fetchall()]
+                    if 'user_id' in tx_columns:
+                        cursor.execute('''
+                            UPDATE bot_transactions 
+                            SET user_id = ? 
+                            WHERE chat_id = ?
+                        ''', (user_id, chat_id))
+                except Exception as e:
+                    print(f"⚠️ Could not update bot_transactions: {e}")
+                
+                migrated_count += 1
+                print(f"✅ Migrated chat_id {chat_id} to user_id {user_id}")
+                
+            except Exception as e:
+                print(f"❌ Error migrating chat_id {chat_id}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        print(f"🎉 Migration complete! Migrated {migrated_count} users")
+        
+    except Exception as e:
+        print(f"❌ Error during migration: {e}")
+        conn.close()
 
 def load_wallets_from_db():
     """Load tracked wallets from database into memory"""
@@ -166,7 +418,11 @@ def load_wallets_from_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT chat_id, wallet_address FROM tracked_wallets')
+        cursor.execute('''
+            SELECT u.chat_id, tw.wallet_address 
+            FROM tracked_wallets tw 
+            JOIN users u ON tw.user_id = u.user_id
+        ''')
         rows = cursor.fetchall()
         
         user_wallets = {}
@@ -184,32 +440,46 @@ def load_wallets_from_db():
 def save_wallet_to_db(chat_id, wallet_address):
     """Save a wallet to the database"""
     try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            print(f"❌ User not found for chat_id {chat_id}")
+            return False
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT OR IGNORE INTO tracked_wallets (chat_id, wallet_address) VALUES (?, ?)',
-            (chat_id, wallet_address)
+            'INSERT OR IGNORE INTO tracked_wallets (user_id, chat_id, wallet_address) VALUES (?, ?, ?)',
+            (user['user_id'], chat_id, wallet_address)
         )
         conn.commit()
         conn.close()
-        print(f"✅ Saved wallet {wallet_address} for user {chat_id} to database")
+        print(f"✅ Saved wallet {wallet_address} for user {user['user_id']} (chat_id: {chat_id}) to database")
+        return True
     except Exception as e:
         print(f"❌ Error saving wallet to database: {e}")
+        return False
 
 def remove_wallet_from_db(chat_id, wallet_address):
     """Remove a wallet from the database"""
     try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            print(f"❌ User not found for chat_id {chat_id}")
+            return False
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute(
-            'DELETE FROM tracked_wallets WHERE chat_id = ? AND wallet_address = ?',
-            (chat_id, wallet_address.lower())
+            'DELETE FROM tracked_wallets WHERE user_id = ? AND wallet_address = ?',
+            (user['user_id'], wallet_address.lower())
         )
         conn.commit()
         conn.close()
-        print(f"✅ Removed wallet {wallet_address} for user {chat_id} from database")
+        print(f"✅ Removed wallet {wallet_address} for user {user['user_id']} from database")
+        return True
     except Exception as e:
         print(f"❌ Error removing wallet from database: {e}")
+        return False
 
 # Flask app
 app = Flask(__name__)
@@ -299,9 +569,18 @@ def create_settings_keyboard():
 def get_user_settings(chat_id):
     """Get user settings from database"""
     try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            # Return default settings for new users
+            return {
+                'alert_threshold': 0.2,
+                'notification_style': 'default',
+                'auto_score': True
+            }
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute('SELECT alert_threshold, notification_style, auto_score FROM user_settings WHERE chat_id = ?', (chat_id,))
+        cursor.execute('SELECT alert_threshold, notification_style, auto_score FROM user_settings WHERE user_id = ?', (user['user_id'],))
         row = cursor.fetchone()
         conn.close()
         
@@ -329,18 +608,25 @@ def get_user_settings(chat_id):
 def save_user_settings(chat_id, settings):
     """Save user settings to database"""
     try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            print(f"❌ User not found for chat_id {chat_id}")
+            return False
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO user_settings 
-            (chat_id, alert_threshold, notification_style, auto_score) 
-            VALUES (?, ?, ?, ?)
-        ''', (chat_id, settings['alert_threshold'], settings['notification_style'], settings['auto_score']))
+            (user_id, chat_id, alert_threshold, notification_style, auto_score) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user['user_id'], chat_id, settings['alert_threshold'], settings['notification_style'], settings['auto_score']))
         conn.commit()
         conn.close()
-        print(f"✅ Saved settings for user {chat_id}")
+        print(f"✅ Saved settings for user {user['user_id']} (chat_id: {chat_id})")
+        return True
     except Exception as e:
         print(f"❌ Error saving user settings: {e}")
+        return False
 
 def get_dashboard_analytics(chat_id):
     """Get comprehensive dashboard analytics for a user"""
@@ -571,6 +857,11 @@ def create_new_wallet(chat_id, wallet_name, password):
         return None, "Encryption not available - missing cryptography dependency"
     
     try:
+        # Get or create user
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return None, "User not found. Please start the bot first with /start"
+        
         # Generate new account
         account = Account.create()
         private_key = account.key.hex()
@@ -586,20 +877,21 @@ def create_new_wallet(chat_id, wallet_name, password):
         # Save connected wallet
         cursor.execute('''
             INSERT OR REPLACE INTO connected_wallets 
-            (chat_id, wallet_address, wallet_name, is_active) 
-            VALUES (?, ?, ?, ?)
-        ''', (chat_id, wallet_address, wallet_name, True))
+            (user_id, chat_id, wallet_address, wallet_name, is_active) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user['user_id'], chat_id, wallet_address, wallet_name, True))
         
         # Save encrypted private key
         cursor.execute('''
             INSERT OR REPLACE INTO wallet_keys 
-            (chat_id, wallet_address, encrypted_private_key, salt) 
-            VALUES (?, ?, ?, ?)
-        ''', (chat_id, wallet_address, encrypted_key, salt))
+            (user_id, chat_id, wallet_address, encrypted_private_key, salt) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user['user_id'], chat_id, wallet_address, encrypted_key, salt))
         
         conn.commit()
         conn.close()
         
+        print(f"✅ Created wallet {wallet_address} for user {user['user_id']} (chat_id: {chat_id})")
         return wallet_address, None
     except Exception as e:
         return None, f"Error creating wallet: {e}"
@@ -607,13 +899,17 @@ def create_new_wallet(chat_id, wallet_name, password):
 def get_user_wallets(chat_id):
     """Get all connected wallets for a user"""
     try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return []
+            
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute('''
             SELECT wallet_address, wallet_name, is_active 
             FROM connected_wallets 
-            WHERE chat_id = ? AND is_active = 1
-        ''', (chat_id,))
+            WHERE user_id = ? AND is_active = 1
+        ''', (user['user_id'],))
         wallets = cursor.fetchall()
         conn.close()
         return wallets
@@ -1127,6 +1423,7 @@ def set_bot_commands():
     """Set the bot commands menu for mobile"""
     commands = [
         {"command": "start", "description": "🔮 Start TradeSeer - Main menu"},
+        {"command": "profile", "description": "👤 View your profile & statistics"},
         {"command": "track", "description": "📈 Track wallet address or basename"},
         {"command": "list", "description": "📊 Show tracked wallets"},
         {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
@@ -1814,8 +2111,25 @@ def get_transaction_history(chat_id):
 
 def handle_start(chat_id):
     """Handle /start command"""
-    message = """
+    # Get user information
+    user = get_user_by_chat_id(chat_id)
+    if user:
+        user_info = f"👤 <b>User ID:</b> {user['user_id']}\n"
+        if user['username']:
+            user_info += f"📝 <b>Username:</b> @{user['username']}\n"
+        if user['first_name']:
+            user_info += f"👋 <b>Name:</b> {user['first_name']}"
+            if user['last_name']:
+                user_info += f" {user['last_name']}"
+            user_info += "\n"
+    else:
+        user_info = "👤 <b>User ID:</b> Creating...\n"
+    
+    message = f"""
 🔮 <b>Welcome to TradeSeer!</b>
+
+{user_info}
+🔐 <b>Your data is securely stored with a unique ID!</b>
 
 I'm your advanced crypto wallet tracker with multi-chain support!
 
@@ -1840,6 +2154,73 @@ I'm your advanced crypto wallet tracker with multi-chain support!
 """
     keyboard = create_main_menu_keyboard()
     bot.send_message(chat_id, message, reply_markup=keyboard)
+
+def handle_profile(chat_id):
+    """Handle /profile command - show user profile and statistics"""
+    user = get_user_by_chat_id(chat_id)
+    if not user:
+        bot.send_message(chat_id, "❌ User profile not found. Please start the bot with /start")
+        return
+    
+    # Get user statistics
+    tracked_wallets = user_wallets.get(chat_id, [])
+    connected_wallets = get_user_wallets(chat_id)
+    settings = get_user_settings(chat_id)
+    
+    # Get registration date and last activity
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT registration_date, last_activity 
+            FROM users 
+            WHERE user_id = ?
+        ''', (user['user_id'],))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            registration_date, last_activity = row
+            reg_date = datetime.fromisoformat(registration_date.replace('Z', '+00:00')).strftime('%B %d, %Y')
+            last_active = datetime.fromisoformat(last_activity.replace('Z', '+00:00')).strftime('%B %d, %Y at %H:%M')
+        else:
+            reg_date = "Unknown"
+            last_active = "Unknown"
+    except Exception as e:
+        print(f"Error getting user dates: {e}")
+        reg_date = "Unknown"
+        last_active = "Unknown"
+    
+    message = f"""
+👤 <b>User Profile</b>
+
+🆔 <b>User ID:</b> {user['user_id']}
+📱 <b>Chat ID:</b> {chat_id}
+📝 <b>Username:</b> @{user['username'] if user['username'] else 'Not set'}
+👋 <b>Name:</b> {user['first_name'] or 'Not set'}{f' {user["last_name"]}' if user['last_name'] else ''}
+
+📅 <b>Member since:</b> {reg_date}
+🕒 <b>Last active:</b> {last_active}
+
+📊 <b>Statistics:</b>
+• 📋 <b>Tracked Wallets:</b> {len(tracked_wallets)}
+• 💼 <b>Connected Wallets:</b> {len(connected_wallets)}
+• ⚙️ <b>Alert Threshold:</b> {settings.get('alert_threshold', 0.2)} ETH
+• 🎨 <b>Notification Style:</b> {settings.get('notification_style', 'default').title()}
+
+🔐 <b>Data Security:</b>
+✅ Your data is stored with a unique user ID
+✅ All wallet keys are encrypted
+✅ Data persists across bot updates
+✅ Activity tracking enabled
+
+💡 <b>Commands:</b>
+• <code>/settings</code> - Customize your preferences
+• <code>/dashboard</code> - View portfolio analytics
+• <code>/my wallets</code> - Manage connected wallets
+"""
+    
+    bot.send_message(chat_id, message)
 
 def handle_track(chat_id, wallet_input):
     """Handle wallet tracking - supports both addresses and basenames"""
@@ -2268,6 +2649,19 @@ def webhook():
             chat_id = message['chat']['id']
             text = message.get('text', '')
             
+            # Extract user information for registration
+            username = message.get('from', {}).get('username')
+            first_name = message.get('from', {}).get('first_name')
+            last_name = message.get('from', {}).get('last_name')
+            
+            # Get or create user automatically
+            user = get_or_create_user(chat_id, username, first_name, last_name)
+            if user and user['is_new']:
+                print(f"🎉 New user registered: ID {user['user_id']}, Chat ID {chat_id}")
+            
+            # Update user activity
+            update_user_activity(chat_id)
+            
             if text.startswith('/start'):
                 handle_start(chat_id)
             elif text.startswith('/track'):
@@ -2290,6 +2684,8 @@ def webhook():
                 handle_dashboard(chat_id)
             elif text.startswith('/settings'):
                 handle_settings(chat_id)
+            elif text.startswith('/profile') or text.startswith('/me'):
+                handle_profile(chat_id)
             elif text.startswith('/wallet') or text.startswith('/wallets'):
                 handle_wallet_connection(chat_id, text)
             else:
@@ -3237,6 +3633,7 @@ if __name__ == '__main__':
     
     # Initialize database and load existing wallets
     init_database()
+    migrate_existing_users()
     load_wallets_from_db()
     
     # Set bot commands for mobile support
