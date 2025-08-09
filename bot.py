@@ -1893,48 +1893,25 @@ def format_number_with_decimals(number):
     else:
         return f"{number:.6f}".rstrip('0').rstrip('.')
 
-def generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network="base", currency="USDC"):
-    """Generate FunBonk payment widget URL according to their documentation"""
+def generate_fonbnk_payment_url(wallet_address, amount_usd, user_id):
+    """Generate direct FunBonk widget URL for simple USDC purchase"""
     try:
-        if not FONBNK_AVAILABLE:
-            return None, "FunBonk integration not configured"
+        if not FONBNK_MERCHANT_SOURCE:
+            return None, "FunBonk merchant source not configured"
         
-        # Import JWT library
-        import jwt
-        import uuid
         from urllib.parse import quote
         
-        # FunBonk base URLs (correct URLs from documentation)
-        if FONBNK_ENVIRONMENT == "production":
-            base_url = "https://pay.fonbnk.com"
-        else:
-            base_url = "https://sandbox-pay.fonbnk.com"
+        # Use direct FunBonk widget URL (simpler approach)
+        base_url = "https://widget.fonbnk.com/buy"
         
-        # Generate JWT signature (required by FunBonk)
-        payload = {
-            "uid": str(uuid.uuid4()),  # Unique identifier required
-            "address": wallet_address,
-            "amount": str(amount_usd),
-            "currency": currency,
-            "network": network,
-            "orderId": order_id
-        }
-        
-        # Create JWT token using URL signature secret (as per documentation)
-        jwt_token = jwt.encode(
-            payload,
-            FONBNK_URL_SIGNATURE_SECRET,
-            algorithm="HS256"
-        )
-        
-        # Build payment URL with required parameters
+        # Simple parameters for direct widget
         params = {
             "source": FONBNK_MERCHANT_SOURCE,
-            "signature": jwt_token,
-            "address": wallet_address,
+            "wallet": wallet_address,
             "amount": str(amount_usd),
-            "currency": currency,
-            "network": network
+            "currency": "USDC",
+            "network": "base",
+            "userId": str(user_id)
         }
         
         # Create URL with parameters
@@ -1943,8 +1920,6 @@ def generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network="b
         
         return payment_url, None
         
-    except ImportError:
-        return None, "PyJWT library not installed. Run: pip install PyJWT"
     except Exception as e:
         print(f"Error generating FunBonk payment URL: {e}")
         return None, str(e)
@@ -1960,8 +1935,8 @@ def create_fonbnk_order(chat_id, wallet_address, amount_usd, currency="USDC", ne
         import uuid
         order_id = f"ts_{user['user_id']}_{int(time.time())}_{str(uuid.uuid4())[:8]}"
         
-        # Generate payment URL
-        payment_url, error = generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network, currency)
+        # Generate payment URL (simplified approach)
+        payment_url, error = generate_fonbnk_payment_url(wallet_address, amount_usd, user['user_id'])
         if error:
             return None, error
         
@@ -4432,43 +4407,51 @@ Choose an amount below or use:
         wallet_address = target_wallet['wallet_address']
         wallet_name = target_wallet.get('wallet_name', 'Primary Wallet')
         
-        # Create FunBonk order
-        order, error = create_fonbnk_order(chat_id, wallet_address, amount_usd)
-        if error:
-            bot.send_message(chat_id, f"❌ Error creating payment: {error}")
+        # Get user info for tracking
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            bot.send_message(chat_id, "❌ User not found. Please use /start first.")
             return
         
-        # Create payment message with buttons
+        # Generate direct FunBonk payment URL
+        payment_url, error = generate_fonbnk_payment_url(wallet_address, amount_usd, user['user_id'])
+        if error:
+            bot.send_message(chat_id, f"❌ Error creating payment link: {error}")
+            return
+        
+        # Create payment message with direct link button
         keyboard = create_inline_keyboard([
-            [{"text": "💳 Pay Now", "url": order['payment_url']}],
-            [
-                {"text": "📊 Check Status", "callback_data": f"check_order_{order['order_id']}"},
-                {"text": "❌ Cancel", "callback_data": f"cancel_order_{order['order_id']}"}
-            ]
+            [{"text": "💳 Buy USDC Now", "url": payment_url}],
+            [{"text": "💰 Different Amount", "callback_data": "buy_usdc_menu"}]
         ])
         
         message = f"""
-💳 <b>USDC Purchase Created</b>
+💳 <b>Buy USDC with FunBonk</b>
 
 💰 <b>Amount:</b> ${amount_usd} USD
-🏷️ <b>Currency:</b> USDC on Base
+🏷️ <b>Currency:</b> USDC on Base Network
 📍 <b>Wallet:</b> {wallet_name}
 🔗 <b>Address:</b> <code>{wallet_address}</code>
 
-📋 <b>Order ID:</b> <code>{order['order_id']}</code>
-
-💡 <b>Next Steps:</b>
-1️⃣ Click "Pay Now" below
-2️⃣ Complete payment with card/bank
-3️⃣ USDC will arrive in your wallet
+💡 <b>Instructions:</b>
+1️⃣ Click "Buy USDC Now" below
+2️⃣ Complete payment with your preferred method
+3️⃣ USDC will arrive directly in your wallet
 
 ⏱️ <b>Settlement:</b> Usually 1-15 minutes
-🔒 <b>Security:</b> Regulated & secure payment processing
+🔒 <b>Powered by:</b> FunBonk (regulated & secure)
 
-<b>Payment Methods:</b>
-• Credit/Debit Cards
-• Bank Transfers
-• Apple Pay / Google Pay
+<b>Payment Methods Available:</b>
+• 💳 Credit/Debit Cards
+• 🏦 Bank Transfers  
+• 📱 Apple Pay / Google Pay
+• 💶 Local payment methods
+
+🎯 <b>Why FunBonk?</b>
+• Direct to your wallet (no KYC for small amounts)
+• Competitive rates
+• Fast settlement
+• Base Network optimized
 """
         
         bot.send_message(chat_id, message, reply_markup=keyboard)

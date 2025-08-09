@@ -1,0 +1,3 @@
+[33m9b7c946[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m  Fix basename and USDC functionality
+[33m3627f29[m  Fix basename and USDC functions
+[33m6052b73[m Enhance basename integration with OnchainKit-inspired features
