@@ -72,11 +72,23 @@ ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
 WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')  # Will be set by Render
 PORT = int(os.getenv('PORT', 5000))
 
+# FunBonk Configuration
+FONBNK_MERCHANT_SOURCE = os.getenv('FONBNK_MERCHANT_SOURCE', '')  # Your FunBonk merchant source ID
+FONBNK_ENVIRONMENT = os.getenv('FONBNK_ENVIRONMENT', 'sandbox')  # 'sandbox' or 'production'
+FONBNK_WEBHOOK_SECRET = os.getenv('FONBNK_WEBHOOK_SECRET', '')  # Webhook verification secret
+
 # Validate environment variables
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 if not ETHERSCAN_API_KEY:
     raise ValueError("ETHERSCAN_API_KEY not found in environment variables")
+
+# FunBonk availability check
+FONBNK_AVAILABLE = bool(FONBNK_MERCHANT_SOURCE)
+if FONBNK_AVAILABLE:
+    print("✅ FunBonk integration available")
+else:
+    print("⚠️ FunBonk integration disabled - set FONBNK_MERCHANT_SOURCE environment variable")
 
 # Global storage
 user_wallets = {}
@@ -244,10 +256,32 @@ def init_database():
         )
     ''')
     
+    # Create table for FunBonk orders tracking
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fonbnk_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            order_id TEXT UNIQUE NOT NULL,
+            wallet_address TEXT NOT NULL,
+            amount_usd REAL NOT NULL,
+            currency TEXT DEFAULT 'USDC',
+            network TEXT DEFAULT 'base',
+            status TEXT DEFAULT 'pending',
+            payment_url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_portfolio_chat_id ON portfolio_history(chat_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_wallet_performance_address ON wallet_performance(wallet_address)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_user_id ON user_positions(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_wallet ON user_positions(wallet_address)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fonbnk_orders_user_id ON fonbnk_orders(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_fonbnk_orders_order_id ON fonbnk_orders(order_id)')
     
     conn.commit()
     conn.close()
@@ -1854,6 +1888,145 @@ def format_number_with_decimals(number):
     else:
         return f"{number:.6f}".rstrip('0').rstrip('.')
 
+def generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network="base", currency="USDC"):
+    """Generate FunBonk payment widget URL"""
+    try:
+        if not FONBNK_AVAILABLE:
+            return None, "FunBonk integration not configured"
+        
+        # FunBonk base URLs
+        if FONBNK_ENVIRONMENT == "production":
+            base_url = "https://pay.fonbnk.com"
+        else:
+            base_url = "https://sandbox.fonbnk.com"
+        
+        # Build payment URL with parameters
+        params = {
+            "source": FONBNK_MERCHANT_SOURCE,
+            "address": wallet_address,
+            "amount": str(amount_usd),
+            "currency": currency,
+            "network": network,
+            "orderId": order_id,
+            "theme": "dark",  # Match your bot's theme
+            "hideHeader": "true"  # Cleaner widget appearance
+        }
+        
+        # Create URL with parameters
+        param_string = "&".join([f"{key}={value}" for key, value in params.items()])
+        payment_url = f"{base_url}?{param_string}"
+        
+        return payment_url, None
+        
+    except Exception as e:
+        print(f"Error generating FunBonk payment URL: {e}")
+        return None, str(e)
+
+def create_fonbnk_order(chat_id, wallet_address, amount_usd, currency="USDC", network="base"):
+    """Create a new FunBonk order in database"""
+    try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return None, "User not found"
+        
+        # Generate unique order ID
+        import uuid
+        order_id = f"ts_{user['user_id']}_{int(time.time())}_{str(uuid.uuid4())[:8]}"
+        
+        # Generate payment URL
+        payment_url, error = generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network, currency)
+        if error:
+            return None, error
+        
+        # Save order to database
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO fonbnk_orders 
+            (user_id, chat_id, order_id, wallet_address, amount_usd, currency, network, payment_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user['user_id'], chat_id, order_id, wallet_address, amount_usd, currency, network, payment_url))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            'order_id': order_id,
+            'payment_url': payment_url,
+            'amount_usd': amount_usd,
+            'currency': currency,
+            'network': network,
+            'wallet_address': wallet_address
+        }, None
+        
+    except Exception as e:
+        print(f"Error creating FunBonk order: {e}")
+        return None, str(e)
+
+def get_fonbnk_order(order_id):
+    """Get FunBonk order details from database"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT user_id, chat_id, order_id, wallet_address, amount_usd, 
+                   currency, network, status, payment_url, created_at, completed_at
+            FROM fonbnk_orders 
+            WHERE order_id = ?
+        ''', (order_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                'user_id': row[0],
+                'chat_id': row[1],
+                'order_id': row[2],
+                'wallet_address': row[3],
+                'amount_usd': row[4],
+                'currency': row[5],
+                'network': row[6],
+                'status': row[7],
+                'payment_url': row[8],
+                'created_at': row[9],
+                'completed_at': row[10]
+            }
+        return None
+        
+    except Exception as e:
+        print(f"Error getting FunBonk order: {e}")
+        return None
+
+def update_fonbnk_order_status(order_id, status, completed_at=None):
+    """Update FunBonk order status"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        if completed_at:
+            cursor.execute('''
+                UPDATE fonbnk_orders 
+                SET status = ?, updated_at = CURRENT_TIMESTAMP, completed_at = ?
+                WHERE order_id = ?
+            ''', (status, completed_at, order_id))
+        else:
+            cursor.execute('''
+                UPDATE fonbnk_orders 
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE order_id = ?
+            ''', (status, order_id))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Error updating FunBonk order status: {e}")
+        return False
+
 def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, password):
     """Execute a token swap on Base network using Uniswap V3"""
     if not WALLET_AVAILABLE:
@@ -2456,6 +2629,7 @@ def set_bot_commands():
         {"command": "track", "description": "📈 Track wallet address or basename"},
         {"command": "list", "description": "📊 Show tracked wallets"},
         {"command": "positions", "description": "💰 View your Base token positions"},
+        {"command": "buy_usdc", "description": "💳 Buy USDC with FunBonk (fiat onramp)"},
         {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
         {"command": "settings", "description": "⚙️ Customize notifications & alerts"},
         {"command": "wallets", "description": "💼 Manage connected wallets"},
@@ -3780,6 +3954,7 @@ Try pasting a wallet address now! 📊
 • <code>/track [wallet/basename]</code> - Track wallet
 • <code>/list</code> - Show tracked wallets  
 • <code>/positions</code> - View your Base token positions
+• <code>/buy_usdc</code> - Buy USDC with fiat (FunBonk)
 • <code>/dashboard</code> - Portfolio overview & analytics
 • <code>/settings</code> - Customize notifications & alerts
 • <code>/wallets</code> - Manage connected wallets
@@ -3920,6 +4095,299 @@ To quickly swap tokens, use this format:
             handle_position_detail(chat_id, position_index)
         except (ValueError, IndexError):
             bot.send_message(chat_id, "❌ Invalid position selected.")
+    elif callback_data.startswith("buy_usdc_"):
+        # Handle USDC purchase amount selection
+        if callback_data == "buy_usdc_custom":
+            bot.send_message(chat_id, """
+💰 <b>Custom USDC Amount</b>
+
+Please send the amount you want to purchase:
+
+<code>/buy_usdc [amount]</code>
+
+<b>Examples:</b>
+• <code>/buy_usdc 150</code>
+• <code>/buy_usdc 75.50</code>
+
+💡 <b>Limits:</b>
+• Minimum: $10 USD
+• Maximum: $10,000 USD per transaction
+""")
+        else:
+            # Extract amount from callback data
+            try:
+                amount = float(callback_data.split("_")[2])
+                handle_buy_usdc(chat_id, str(amount))
+            except (ValueError, IndexError):
+                bot.send_message(chat_id, "❌ Invalid amount selected.")
+    elif callback_data.startswith("check_order_"):
+        # Handle order status check
+        order_id = callback_data.replace("check_order_", "")
+        handle_check_order_status(chat_id, order_id)
+    elif callback_data.startswith("cancel_order_"):
+        # Handle order cancellation
+        order_id = callback_data.replace("cancel_order_", "")
+        handle_cancel_order(chat_id, order_id)
+
+def handle_buy_usdc(chat_id, amount_str=None):
+    """Handle /buy_usdc command - create FunBonk payment link"""
+    try:
+        if not FONBNK_AVAILABLE:
+            bot.send_message(chat_id, """
+❌ <b>USDC Purchase Unavailable</b>
+
+FunBonk integration is not configured. 
+
+💡 <b>Alternative:</b>
+• Use centralized exchanges (Coinbase, Binance)
+• Use other fiat onramps
+• Send ETH/USDC directly to your wallet
+
+<b>Commands:</b>
+• <code>/wallets</code> - View your wallet addresses
+• <code>/positions</code> - Check your current holdings
+""")
+            return
+        
+        # Get user's connected wallets
+        user_wallets_data = get_user_wallets(chat_id)
+        
+        if not user_wallets_data:
+            bot.send_message(chat_id, """
+❌ <b>No Wallet Connected</b>
+
+You need to connect a wallet first to buy USDC.
+
+💡 <b>Get Started:</b>
+• <code>/wallets</code> - Connect or create a wallet
+• <code>create wallet name:MyWallet password:SecurePass123</code>
+
+Once you have a wallet, you can buy USDC directly!
+""")
+            return
+        
+        # Parse amount if provided
+        amount_usd = None
+        if amount_str:
+            try:
+                amount_usd = float(amount_str)
+                if amount_usd <= 0:
+                    bot.send_message(chat_id, "❌ Amount must be greater than 0")
+                    return
+                if amount_usd < 10:
+                    bot.send_message(chat_id, "❌ Minimum purchase amount is $10 USD")
+                    return
+                if amount_usd > 10000:
+                    bot.send_message(chat_id, "❌ Maximum purchase amount is $10,000 USD per transaction")
+                    return
+            except ValueError:
+                bot.send_message(chat_id, f"❌ Invalid amount: {amount_str}")
+                return
+        
+        # If no amount specified, show options
+        if not amount_usd:
+            keyboard = create_inline_keyboard([
+                [
+                    {"text": "$25", "callback_data": "buy_usdc_25"},
+                    {"text": "$50", "callback_data": "buy_usdc_50"},
+                    {"text": "$100", "callback_data": "buy_usdc_100"}
+                ],
+                [
+                    {"text": "$250", "callback_data": "buy_usdc_250"},
+                    {"text": "$500", "callback_data": "buy_usdc_500"},
+                    {"text": "$1000", "callback_data": "buy_usdc_1000"}
+                ],
+                [{"text": "💰 Custom Amount", "callback_data": "buy_usdc_custom"}]
+            ])
+            
+            message = f"""
+💳 <b>Buy USDC with FunBonk</b>
+
+🎯 <b>Quick Amounts:</b>
+Choose an amount below or use:
+<code>/buy_usdc [amount]</code>
+
+💼 <b>Connected Wallets:</b>"""
+            
+            for i, wallet in enumerate(user_wallets_data[:3], 1):  # Show first 3 wallets
+                wallet_addr = wallet['wallet_address']
+                balance = get_wallet_balance(wallet_addr)
+                balance_str = f"{balance:.4f} ETH" if balance else "0 ETH"
+                message += f"\n• {wallet.get('wallet_name', f'Wallet #{i}')}: {balance_str}"
+            
+            message += f"""
+
+💡 <b>Features:</b>
+• Pay with card, bank transfer, Apple Pay
+• Direct USDC to your Base wallet
+• Instant or fast settlement
+• Secure & regulated
+
+⚡ <b>Base Network Benefits:</b>
+• Low fees (~$0.01)
+• Fast transactions
+• Perfect for DeFi
+"""
+            
+            bot.send_message(chat_id, message, reply_markup=keyboard)
+            return
+        
+        # Use the first wallet if multiple exist
+        target_wallet = user_wallets_data[0]
+        wallet_address = target_wallet['wallet_address']
+        wallet_name = target_wallet.get('wallet_name', 'Primary Wallet')
+        
+        # Create FunBonk order
+        order, error = create_fonbnk_order(chat_id, wallet_address, amount_usd)
+        if error:
+            bot.send_message(chat_id, f"❌ Error creating payment: {error}")
+            return
+        
+        # Create payment message with buttons
+        keyboard = create_inline_keyboard([
+            [{"text": "💳 Pay Now", "url": order['payment_url']}],
+            [
+                {"text": "📊 Check Status", "callback_data": f"check_order_{order['order_id']}"},
+                {"text": "❌ Cancel", "callback_data": f"cancel_order_{order['order_id']}"}
+            ]
+        ])
+        
+        message = f"""
+💳 <b>USDC Purchase Created</b>
+
+💰 <b>Amount:</b> ${amount_usd} USD
+🏷️ <b>Currency:</b> USDC on Base
+📍 <b>Wallet:</b> {wallet_name}
+🔗 <b>Address:</b> <code>{wallet_address}</code>
+
+📋 <b>Order ID:</b> <code>{order['order_id']}</code>
+
+💡 <b>Next Steps:</b>
+1️⃣ Click "Pay Now" below
+2️⃣ Complete payment with card/bank
+3️⃣ USDC will arrive in your wallet
+
+⏱️ <b>Settlement:</b> Usually 1-15 minutes
+🔒 <b>Security:</b> Regulated & secure payment processing
+
+<b>Payment Methods:</b>
+• Credit/Debit Cards
+• Bank Transfers
+• Apple Pay / Google Pay
+"""
+        
+        bot.send_message(chat_id, message, reply_markup=keyboard)
+        
+    except Exception as e:
+        print(f"Error handling buy USDC: {e}")
+        bot.send_message(chat_id, "❌ Error processing USDC purchase. Please try again later.")
+
+def handle_check_order_status(chat_id, order_id):
+    """Handle order status check"""
+    try:
+        order = get_fonbnk_order(order_id)
+        if not order:
+            bot.send_message(chat_id, "❌ Order not found.")
+            return
+        
+        # Check if this order belongs to the user
+        if order['chat_id'] != chat_id:
+            bot.send_message(chat_id, "❌ Order not found.")
+            return
+        
+        status_emojis = {
+            'pending': '⏳',
+            'processing': '🔄',
+            'completed': '✅',
+            'failed': '❌',
+            'cancelled': '🚫'
+        }
+        
+        status_emoji = status_emojis.get(order['status'], '❓')
+        
+        message = f"""
+📋 <b>Order Status</b>
+
+🆔 <b>Order ID:</b> <code>{order_id}</code>
+{status_emoji} <b>Status:</b> {order['status'].title()}
+💰 <b>Amount:</b> ${order['amount_usd']} {order['currency']}
+🔗 <b>Wallet:</b> <code>{order['wallet_address']}</code>
+🌐 <b>Network:</b> {order['network'].title()}
+📅 <b>Created:</b> {order['created_at'][:16]}
+"""
+        
+        if order['completed_at']:
+            message += f"✅ <b>Completed:</b> {order['completed_at'][:16]}\n"
+        
+        # Create action buttons based on status
+        if order['status'] == 'pending':
+            keyboard = create_inline_keyboard([
+                [{"text": "💳 Pay Now", "url": order['payment_url']}],
+                [
+                    {"text": "🔄 Refresh", "callback_data": f"check_order_{order_id}"},
+                    {"text": "❌ Cancel", "callback_data": f"cancel_order_{order_id}"}
+                ]
+            ])
+            message += "\n💡 <b>Action Required:</b> Complete payment to receive USDC"
+        elif order['status'] == 'processing':
+            keyboard = create_inline_keyboard([
+                [{"text": "🔄 Refresh", "callback_data": f"check_order_{order_id}"}]
+            ])
+            message += "\n⏱️ <b>Processing:</b> Payment received, USDC being sent to your wallet"
+        elif order['status'] == 'completed':
+            keyboard = create_inline_keyboard([
+                [{"text": "💰 Check Balance", "callback_data": "my_wallets"}],
+                [{"text": "🏠 Main Menu", "callback_data": "back_to_menu"}]
+            ])
+            message += "\n🎉 <b>Success:</b> USDC has been sent to your wallet!"
+        else:
+            keyboard = create_inline_keyboard([
+                [{"text": "🏠 Main Menu", "callback_data": "back_to_menu"}]
+            ])
+        
+        bot.send_message(chat_id, message, reply_markup=keyboard)
+        
+    except Exception as e:
+        print(f"Error checking order status: {e}")
+        bot.send_message(chat_id, "❌ Error checking order status.")
+
+def handle_cancel_order(chat_id, order_id):
+    """Handle order cancellation"""
+    try:
+        order = get_fonbnk_order(order_id)
+        if not order:
+            bot.send_message(chat_id, "❌ Order not found.")
+            return
+        
+        # Check if this order belongs to the user
+        if order['chat_id'] != chat_id:
+            bot.send_message(chat_id, "❌ Order not found.")
+            return
+        
+        # Only allow cancellation of pending orders
+        if order['status'] != 'pending':
+            bot.send_message(chat_id, f"❌ Cannot cancel order with status: {order['status']}")
+            return
+        
+        # Update order status to cancelled
+        if update_fonbnk_order_status(order_id, 'cancelled'):
+            bot.send_message(chat_id, f"""
+🚫 <b>Order Cancelled</b>
+
+Order {order_id} has been cancelled.
+
+💡 <b>Need USDC?</b>
+• Use <code>/buy_usdc</code> to create a new order
+• Check <code>/wallets</code> for your addresses
+
+<b>Questions?</b> Contact support if you have any issues.
+""")
+        else:
+            bot.send_message(chat_id, "❌ Error cancelling order. Please try again.")
+            
+    except Exception as e:
+        print(f"Error cancelling order: {e}")
+        bot.send_message(chat_id, "❌ Error cancelling order.")
 
 def handle_position_detail(chat_id, position_index):
     """Show detailed information for a specific position"""
@@ -4066,6 +4534,10 @@ def webhook():
                 handle_wallet_connection(chat_id, text)
             elif text.startswith('/positions') or text.startswith('/pos'):
                 handle_positions(chat_id)
+            elif text.startswith('/buy_usdc') or text.startswith('/buyusdc'):
+                parts = text.split(' ', 1)
+                amount_str = parts[1] if len(parts) > 1 else None
+                handle_buy_usdc(chat_id, amount_str)
             else:
                 # Check for pending swap password confirmation first
                 if chat_id in PENDING_SWAPS:
@@ -4191,6 +4663,161 @@ def set_webhook():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/fonbnk_webhook', methods=['POST'])
+def fonbnk_webhook():
+    """Handle FunBonk webhook notifications"""
+    try:
+        # Get the raw request data
+        raw_data = request.get_data()
+        
+        # Verify webhook signature if secret is configured
+        if FONBNK_WEBHOOK_SECRET:
+            signature = request.headers.get('X-Signature')
+            if not signature:
+                print("FunBonk webhook: No signature provided")
+                return jsonify({'error': 'No signature'}), 401
+            
+            # Verify HMAC signature
+            import hmac
+            import hashlib
+            
+            expected_signature = hmac.new(
+                FONBNK_WEBHOOK_SECRET.encode(),
+                raw_data,
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected_signature):
+                print("FunBonk webhook: Invalid signature")
+                return jsonify({'error': 'Invalid signature'}), 401
+        
+        # Parse webhook data
+        webhook_data = request.get_json()
+        
+        if not webhook_data:
+            print("FunBonk webhook: No data received")
+            return jsonify({'error': 'No data'}), 400
+        
+        # Process the webhook
+        process_fonbnk_webhook(webhook_data)
+        
+        return jsonify({'status': 'success'})
+        
+    except Exception as e:
+        print(f"Error processing FunBonk webhook: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+def process_fonbnk_webhook(data):
+    """Process FunBonk webhook data"""
+    try:
+        event_type = data.get('event')
+        order_data = data.get('order', {})
+        order_id = order_data.get('orderId') or order_data.get('id')
+        
+        if not order_id:
+            print("FunBonk webhook: No order ID found")
+            return
+        
+        print(f"FunBonk webhook: Processing {event_type} for order {order_id}")
+        
+        # Get order from database
+        order = get_fonbnk_order(order_id)
+        if not order:
+            print(f"FunBonk webhook: Order {order_id} not found in database")
+            return
+        
+        # Update order status based on event
+        new_status = None
+        completed_at = None
+        
+        if event_type == 'order.created':
+            new_status = 'pending'
+        elif event_type == 'order.payment_received':
+            new_status = 'processing'
+        elif event_type == 'order.completed':
+            new_status = 'completed'
+            completed_at = datetime.now().isoformat()
+        elif event_type == 'order.failed':
+            new_status = 'failed'
+        elif event_type == 'order.cancelled':
+            new_status = 'cancelled'
+        
+        if new_status:
+            # Update order status in database
+            update_fonbnk_order_status(order_id, new_status, completed_at)
+            
+            # Send notification to user
+            send_fonbnk_notification(order['chat_id'], order_id, new_status, order_data)
+        
+    except Exception as e:
+        print(f"Error processing FunBonk webhook data: {e}")
+
+def send_fonbnk_notification(chat_id, order_id, status, order_data):
+    """Send notification to user about order status change"""
+    try:
+        status_messages = {
+            'processing': {
+                'emoji': '🔄',
+                'title': 'Payment Received',
+                'message': 'Your payment has been received and is being processed. USDC will arrive in your wallet shortly!'
+            },
+            'completed': {
+                'emoji': '✅',
+                'title': 'USDC Purchase Complete',
+                'message': 'Success! USDC has been sent to your wallet. You can now use it for trading on Base network!'
+            },
+            'failed': {
+                'emoji': '❌',
+                'title': 'Payment Failed',
+                'message': 'Your payment could not be processed. Please try again or contact support if the issue persists.'
+            },
+            'cancelled': {
+                'emoji': '🚫',
+                'title': 'Order Cancelled',
+                'message': 'Your order has been cancelled. No charges were made.'
+            }
+        }
+        
+        notification = status_messages.get(status)
+        if not notification:
+            return
+        
+        amount = order_data.get('amount', 'Unknown')
+        currency = order_data.get('currency', 'USDC')
+        
+        message = f"""
+{notification['emoji']} <b>{notification['title']}</b>
+
+💰 <b>Amount:</b> ${amount} {currency}
+📋 <b>Order ID:</b> <code>{order_id}</code>
+
+{notification['message']}
+"""
+        
+        # Add action buttons based on status
+        if status == 'completed':
+            keyboard = create_inline_keyboard([
+                [
+                    {"text": "💰 Check Balance", "callback_data": "my_wallets"},
+                    {"text": "📊 Positions", "callback_data": "refresh_positions"}
+                ],
+                [{"text": "🔄 Buy More USDC", "callback_data": "buy_usdc_custom"}]
+            ])
+        elif status == 'failed':
+            keyboard = create_inline_keyboard([
+                [{"text": "🔄 Try Again", "callback_data": "buy_usdc_custom"}],
+                [{"text": "🏠 Main Menu", "callback_data": "back_to_menu"}]
+            ])
+        else:
+            keyboard = create_inline_keyboard([
+                [{"text": "📊 Check Status", "callback_data": f"check_order_{order_id}"}]
+            ])
+        
+        bot.send_message(chat_id, message, reply_markup=keyboard)
+        
+    except Exception as e:
+        print(f"Error sending FunBonk notification: {e}")
 
 @app.route('/health', methods=['GET'])
 def health():
