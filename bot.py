@@ -221,8 +221,33 @@ def init_database():
         )
     ''')
     
+    # Create table for tracking token positions
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_positions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            wallet_address TEXT NOT NULL,
+            token_address TEXT NOT NULL,
+            token_symbol TEXT NOT NULL,
+            token_name TEXT,
+            chain TEXT DEFAULT 'base',
+            initial_amount REAL NOT NULL,
+            current_amount REAL NOT NULL,
+            initial_price_usd REAL,
+            initial_investment_usd REAL,
+            first_purchase_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1,
+            UNIQUE(user_id, wallet_address, token_address),
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_portfolio_chat_id ON portfolio_history(chat_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_wallet_performance_address ON wallet_performance(wallet_address)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_user_id ON user_positions(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_positions_wallet ON user_positions(wallet_address)')
     
     conn.commit()
     conn.close()
@@ -1472,6 +1497,188 @@ def get_wallet_balance(wallet_address, chain="base"):
         print(f"Error getting balance: {e}")
         return None
 
+def get_erc20_token_balance(wallet_address, token_address, chain="base"):
+    """Get ERC20 token balance for a wallet"""
+    if not WEB3_AVAILABLE:
+        return None
+    
+    try:
+        # Connect to the appropriate network
+        if chain == "base":
+            w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
+        elif chain == "ethereum":
+            w3 = Web3(Web3.HTTPProvider('https://eth.llamarpc.com'))
+        else:
+            return None
+        
+        # Standard ERC20 ABI for balanceOf function
+        erc20_abi = [
+            {
+                "constant": True,
+                "inputs": [{"name": "_owner", "type": "address"}],
+                "name": "balanceOf",
+                "outputs": [{"name": "balance", "type": "uint256"}],
+                "type": "function"
+            },
+            {
+                "constant": True,
+                "inputs": [],
+                "name": "decimals",
+                "outputs": [{"name": "", "type": "uint8"}],
+                "type": "function"
+            },
+            {
+                "constant": True,
+                "inputs": [],
+                "name": "symbol",
+                "outputs": [{"name": "", "type": "string"}],
+                "type": "function"
+            },
+            {
+                "constant": True,
+                "inputs": [],
+                "name": "name",
+                "outputs": [{"name": "", "type": "string"}],
+                "type": "function"
+            }
+        ]
+        
+        # Create contract instance
+        contract = w3.eth.contract(address=to_checksum_address(token_address), abi=erc20_abi)
+        
+        # Get balance
+        balance_wei = contract.functions.balanceOf(to_checksum_address(wallet_address)).call()
+        
+        # Get decimals
+        decimals = contract.functions.decimals().call()
+        
+        # Convert to human readable format
+        balance = balance_wei / (10 ** decimals)
+        
+        return {
+            'balance': balance,
+            'balance_wei': balance_wei,
+            'decimals': decimals
+        }
+        
+    except Exception as e:
+        print(f"Error getting ERC20 token balance: {e}")
+        return None
+
+def get_wallet_token_balances(wallet_address, token_addresses, chain="base"):
+    """Get balances for multiple tokens at once"""
+    if not WEB3_AVAILABLE or not token_addresses:
+        return {}
+    
+    balances = {}
+    for token_address in token_addresses:
+        try:
+            balance_info = get_erc20_token_balance(wallet_address, token_address, chain)
+            if balance_info and balance_info['balance'] > 0:
+                balances[token_address] = balance_info
+        except Exception as e:
+            print(f"Error getting balance for token {token_address}: {e}")
+            continue
+    
+    return balances
+
+def get_token_price_data(token_address, chain="base"):
+    """Get token price and market data from CoinGecko"""
+    try:
+        # Map chain to CoinGecko platform ID
+        platform_map = {
+            "base": "base",
+            "ethereum": "ethereum",
+            "polygon": "polygon-pos",
+            "arbitrum": "arbitrum-one",
+            "optimism": "optimistic-ethereum"
+        }
+        
+        platform = platform_map.get(chain, "base")
+        
+        # Get token data from CoinGecko
+        url = f"https://api.coingecko.com/api/v3/coins/{platform}/contract/{token_address}"
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            market_data = data.get('market_data', {})
+            
+            return {
+                'symbol': data.get('symbol', '').upper(),
+                'name': data.get('name', ''),
+                'current_price': market_data.get('current_price', {}).get('usd', 0),
+                'market_cap': market_data.get('market_cap', {}).get('usd', 0),
+                'price_change_24h': market_data.get('price_change_percentage_24h', 0),
+                'price_change_1h': market_data.get('price_change_percentage_1h', 0),
+                'price_change_7d': market_data.get('price_change_percentage_7d', 0),
+                'price_change_5m': 0,  # CoinGecko doesn't provide 5m data in free tier
+                'price_change_6h': market_data.get('price_change_percentage_6h', 0),
+                'total_supply': market_data.get('total_supply', 0),
+                'circulating_supply': market_data.get('circulating_supply', 0)
+            }
+        else:
+            # Fallback to DexScreener for more detailed data
+            return get_token_price_from_dexscreener(token_address, chain)
+            
+    except Exception as e:
+        print(f"Error getting token price data: {e}")
+        # Try DexScreener as fallback
+        return get_token_price_from_dexscreener(token_address, chain)
+
+def get_token_price_from_dexscreener(token_address, chain="base"):
+    """Fallback price data from DexScreener API"""
+    try:
+        chain_map = {
+            "base": "base",
+            "ethereum": "ethereum",
+            "polygon": "polygon",
+            "arbitrum": "arbitrum",
+            "optimism": "optimism"
+        }
+        
+        network = chain_map.get(chain, "base")
+        url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+        
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            pairs = data.get('pairs', [])
+            
+            if pairs:
+                # Find the best pair (highest liquidity on correct chain)
+                best_pair = None
+                for pair in pairs:
+                    if pair.get('chainId') == network:
+                        if not best_pair or pair.get('liquidity', {}).get('usd', 0) > best_pair.get('liquidity', {}).get('usd', 0):
+                            best_pair = pair
+                
+                if not best_pair:
+                    best_pair = pairs[0]  # Use first pair if no chain match
+                
+                price_usd = float(best_pair.get('priceUsd', 0))
+                
+                return {
+                    'symbol': best_pair.get('baseToken', {}).get('symbol', '').upper(),
+                    'name': best_pair.get('baseToken', {}).get('name', ''),
+                    'current_price': price_usd,
+                    'market_cap': best_pair.get('marketCap', 0),
+                    'price_change_24h': best_pair.get('priceChange', {}).get('h24', 0),
+                    'price_change_1h': best_pair.get('priceChange', {}).get('h1', 0),
+                    'price_change_7d': 0,  # Not available in DexScreener
+                    'price_change_5m': best_pair.get('priceChange', {}).get('m5', 0),
+                    'price_change_6h': best_pair.get('priceChange', {}).get('h6', 0),
+                    'total_supply': 0,
+                    'circulating_supply': 0
+                }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error getting token price from DexScreener: {e}")
+        return None
+
 def get_token_info(token_address, chain="base"):
     """Get token information"""
     try:
@@ -1489,6 +1696,163 @@ def get_token_info(token_address, chain="base"):
     except Exception as e:
         print(f"Error getting token info: {e}")
         return None
+
+def get_user_positions(chat_id):
+    """Get all active positions for a user"""
+    try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return []
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT wallet_address, token_address, token_symbol, token_name, 
+                   initial_amount, current_amount, initial_price_usd, 
+                   initial_investment_usd, first_purchase_date, chain
+            FROM user_positions 
+            WHERE user_id = ? AND is_active = 1 AND current_amount > 0
+            ORDER BY initial_investment_usd DESC
+        ''', (user['user_id'],))
+        
+        positions = []
+        for row in cursor.fetchall():
+            wallet_address, token_address, token_symbol, token_name, initial_amount, current_amount, initial_price_usd, initial_investment_usd, first_purchase_date, chain = row
+            
+            # Get current balance from blockchain
+            balance_info = get_erc20_token_balance(wallet_address, token_address, chain)
+            current_amount = balance_info['balance'] if balance_info else current_amount
+            
+            # Get current price data
+            price_data = get_token_price_data(token_address, chain)
+            
+            position = {
+                'wallet_address': wallet_address,
+                'token_address': token_address,
+                'token_symbol': token_symbol or (price_data['symbol'] if price_data else 'UNKNOWN'),
+                'token_name': token_name or (price_data['name'] if price_data else 'Unknown Token'),
+                'initial_amount': initial_amount,
+                'current_amount': current_amount,
+                'initial_price_usd': initial_price_usd,
+                'initial_investment_usd': initial_investment_usd,
+                'first_purchase_date': first_purchase_date,
+                'chain': chain,
+                'price_data': price_data
+            }
+            
+            # Calculate profit/loss
+            if price_data and price_data['current_price'] > 0:
+                current_value = current_amount * price_data['current_price']
+                position['current_value_usd'] = current_value
+                position['profit_usd'] = current_value - initial_investment_usd
+                position['profit_percentage'] = ((current_value - initial_investment_usd) / initial_investment_usd) * 100 if initial_investment_usd > 0 else 0
+            else:
+                position['current_value_usd'] = 0
+                position['profit_usd'] = -initial_investment_usd
+                position['profit_percentage'] = -100
+            
+            positions.append(position)
+        
+        conn.close()
+        return positions
+        
+    except Exception as e:
+        print(f"Error getting user positions: {e}")
+        return []
+
+def update_or_create_position(chat_id, wallet_address, token_address, token_symbol, amount, price_usd, transaction_type="buy", chain="base"):
+    """Update or create a position when user buys/sells tokens"""
+    try:
+        user = get_user_by_chat_id(chat_id)
+        if not user:
+            return False
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # Check if position exists
+        cursor.execute('''
+            SELECT id, initial_amount, current_amount, initial_investment_usd, initial_price_usd
+            FROM user_positions 
+            WHERE user_id = ? AND wallet_address = ? AND token_address = ?
+        ''', (user['user_id'], wallet_address, token_address))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing position
+            pos_id, initial_amount, current_amount, initial_investment_usd, initial_price_usd = existing
+            
+            if transaction_type == "buy":
+                new_current_amount = current_amount + amount
+                new_investment = initial_investment_usd + (amount * price_usd)
+                
+                cursor.execute('''
+                    UPDATE user_positions 
+                    SET current_amount = ?, initial_investment_usd = ?, last_updated = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (new_current_amount, new_investment, pos_id))
+            else:  # sell
+                new_current_amount = max(0, current_amount - amount)
+                if new_current_amount == 0:
+                    # Mark position as inactive
+                    cursor.execute('''
+                        UPDATE user_positions 
+                        SET current_amount = 0, is_active = 0, last_updated = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (pos_id,))
+                else:
+                    cursor.execute('''
+                        UPDATE user_positions 
+                        SET current_amount = ?, last_updated = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (new_current_amount, pos_id))
+        else:
+            # Create new position
+            if transaction_type == "buy":
+                cursor.execute('''
+                    INSERT INTO user_positions 
+                    (user_id, chat_id, wallet_address, token_address, token_symbol, 
+                     initial_amount, current_amount, initial_price_usd, initial_investment_usd, chain)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (user['user_id'], chat_id, wallet_address, token_address, token_symbol,
+                      amount, amount, price_usd, amount * price_usd, chain))
+        
+        conn.commit()
+        conn.close()
+        return True
+        
+    except Exception as e:
+        print(f"Error updating position: {e}")
+        return False
+
+def format_number_with_decimals(number):
+    """Format numbers with appropriate decimal places (e.g., 0.0₄726)"""
+    if number == 0:
+        return "0"
+    
+    if number >= 1:
+        return f"{number:,.2f}"
+    
+    # For very small numbers, show the format like 0.0₄726
+    str_num = f"{number:.20f}"
+    decimal_part = str_num.split('.')[1]
+    
+    # Count leading zeros
+    leading_zeros = 0
+    for char in decimal_part:
+        if char == '0':
+            leading_zeros += 1
+        else:
+            break
+    
+    if leading_zeros >= 3:
+        # Get first 3-4 significant digits after leading zeros
+        significant_part = decimal_part[leading_zeros:leading_zeros+3]
+        return f"0.0₃{leading_zeros}{significant_part}"
+    else:
+        return f"{number:.6f}".rstrip('0').rstrip('.')
 
 def execute_token_swap(chat_id, wallet_address, token_address, amount_eth, password):
     """Execute a token swap on Base network using Uniswap V3"""
@@ -2091,6 +2455,7 @@ def set_bot_commands():
         {"command": "profile", "description": "👤 View your profile & statistics"},
         {"command": "track", "description": "📈 Track wallet address or basename"},
         {"command": "list", "description": "📊 Show tracked wallets"},
+        {"command": "positions", "description": "💰 View your Base token positions"},
         {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
         {"command": "settings", "description": "⚙️ Customize notifications & alerts"},
         {"command": "wallets", "description": "💼 Manage connected wallets"},
@@ -2984,6 +3349,157 @@ def handle_profile(chat_id):
     
     bot.send_message(chat_id, message)
 
+def handle_positions(chat_id):
+    """Handle /positions command - show user's token positions"""
+    try:
+        # Get user's positions
+        positions = get_user_positions(chat_id)
+        
+        if not positions:
+            message = """
+📊 <b>Positions Overview</b>
+
+❌ <b>No positions found</b>
+
+💡 <b>Start trading to build your portfolio!</b>
+• Use token swaps to acquire positions
+• Your positions will be tracked automatically
+• Use <code>/wallets</code> to connect your wallets
+
+<b>Commands:</b>
+• <code>/wallets</code> - Manage connected wallets
+• <code>/dashboard</code> - View portfolio analytics
+"""
+            bot.send_message(chat_id, message)
+            return
+        
+        # Get user's ETH balance from connected wallets
+        user_wallets_data = get_user_wallets(chat_id)
+        total_eth_balance = 0
+        total_net_worth_eth = 0
+        
+        for wallet in user_wallets_data:
+            balance = get_wallet_balance(wallet['wallet_address'])
+            if balance:
+                total_eth_balance += balance
+        
+        # Format positions
+        message = "📊 <b>Positions Overview</b>\n\n"
+        
+        total_value_usd = 0
+        total_investment_usd = 0
+        
+        for i, position in enumerate(positions, 1):
+            symbol = position['token_symbol']
+            price_data = position['price_data']
+            current_value = position.get('current_value_usd', 0)
+            profit_usd = position.get('profit_usd', 0)
+            profit_pct = position.get('profit_percentage', 0)
+            
+            total_value_usd += current_value
+            total_investment_usd += position['initial_investment_usd']
+            
+            # Format profit/loss
+            if profit_pct >= 0:
+                profit_display = f"+{profit_pct:.2f}% / +${profit_usd:.4f}"
+            else:
+                profit_display = f"{profit_pct:.2f}% / -${abs(profit_usd):.4f}"
+            
+            # Format price with appropriate decimals
+            current_price = price_data['current_price'] if price_data else 0
+            price_formatted = format_number_with_decimals(current_price)
+            
+            # Format market cap
+            market_cap = price_data['market_cap'] if price_data else 0
+            if market_cap >= 1000000:
+                mcap_display = f"${market_cap/1000000:.2f}M"
+            elif market_cap >= 1000:
+                mcap_display = f"${market_cap/1000:.2f}K"
+            else:
+                mcap_display = f"${market_cap:.2f}"
+            
+            # Price changes
+            changes = ""
+            if price_data:
+                change_5m = price_data.get('price_change_5m', 0)
+                change_1h = price_data.get('price_change_1h', 0)
+                change_6h = price_data.get('price_change_6h', 0)
+                change_24h = price_data.get('price_change_24h', 0)
+                
+                def format_change(change):
+                    return f"+{change:.2f}%" if change >= 0 else f"{change:.2f}%"
+                
+                changes = f"5m: {format_change(change_5m)}, 1h: {format_change(change_1h)}, 6h: {format_change(change_6h)}, 24h: {format_change(change_24h)}"
+            
+            message += f"""/{i} ${symbol}
+Profit: {profit_display}
+Value: ${current_value:.2f} / {current_value/current_price if current_price > 0 else 0:.4f} {symbol}
+Mcap: {mcap_display} @ ${price_formatted}
+{changes}
+
+"""
+        
+        # Calculate total ETH equivalent
+        eth_price_url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+        try:
+            eth_response = requests.get(eth_price_url, timeout=5)
+            eth_price = eth_response.json().get('ethereum', {}).get('usd', 3000)  # fallback to $3000
+        except:
+            eth_price = 3000
+        
+        total_net_worth_eth = total_eth_balance + (total_value_usd / eth_price)
+        
+        # Add balance and net worth
+        message += f"""Balance: {total_eth_balance:.4f} ETH
+Net Worth: {total_net_worth_eth:.4f} ETH / ${total_value_usd:.2f}
+
+"""
+        
+        # Add tip and warnings
+        message += "💡 <b>Tip:</b> 💸 Base network fees are low! Perfect for trading! 💸\n"
+        
+        if total_eth_balance < 0.005:
+            message += "⚠️ You have under 0.005 ETH in your account. Please add more to pay for Base blockchain fees. ⚠️"
+        
+        # Create inline keyboard for position actions
+        keyboard_buttons = []
+        
+        # Add buttons for first few positions (max 3 rows to avoid clutter)
+        for i in range(min(len(positions), 6)):
+            if i % 2 == 0:
+                # Start new row
+                row = [{"text": f"📊 Position #{i+1}", "callback_data": f"position_{i}"}]
+                if i+1 < len(positions):
+                    row.append({"text": f"📊 Position #{i+2}", "callback_data": f"position_{i+1}"})
+                keyboard_buttons.append(row)
+        
+        # Add refresh button
+        keyboard_buttons.append([{"text": "🔄 Refresh Positions", "callback_data": "refresh_positions"}])
+        
+        keyboard = create_inline_keyboard(keyboard_buttons)
+        
+        # Send message (Telegram has a 4096 character limit, so we might need to split)
+        if len(message) > 4000:
+            # Split into multiple messages
+            lines = message.split('\n')
+            current_message = "📊 <b>Positions Overview</b>\n\n"
+            
+            for line in lines[2:]:  # Skip the header
+                if len(current_message + line + '\n') > 4000:
+                    bot.send_message(chat_id, current_message)
+                    current_message = line + '\n'
+                else:
+                    current_message += line + '\n'
+            
+            if current_message.strip():
+                bot.send_message(chat_id, current_message, reply_markup=keyboard)
+        else:
+            bot.send_message(chat_id, message, reply_markup=keyboard)
+            
+    except Exception as e:
+        print(f"Error handling positions: {e}")
+        bot.send_message(chat_id, "❌ Error retrieving positions. Please try again later.")
+
 def handle_track(chat_id, wallet_input):
     """Handle wallet tracking - supports both addresses and basenames"""
     if not wallet_input:
@@ -3263,6 +3779,7 @@ Try pasting a wallet address now! 📊
 • <code>/start</code> - Main menu
 • <code>/track [wallet/basename]</code> - Track wallet
 • <code>/list</code> - Show tracked wallets  
+• <code>/positions</code> - View your Base token positions
 • <code>/dashboard</code> - Portfolio overview & analytics
 • <code>/settings</code> - Customize notifications & alerts
 • <code>/wallets</code> - Manage connected wallets
@@ -3394,6 +3911,103 @@ To quickly swap tokens, use this format:
 """)
     elif callback_data == "back_to_menu":
         handle_start(chat_id)
+    elif callback_data == "refresh_positions":
+        handle_positions(chat_id)
+    elif callback_data.startswith("position_"):
+        # Handle individual position details
+        try:
+            position_index = int(callback_data.split("_")[1])
+            handle_position_detail(chat_id, position_index)
+        except (ValueError, IndexError):
+            bot.send_message(chat_id, "❌ Invalid position selected.")
+
+def handle_position_detail(chat_id, position_index):
+    """Show detailed information for a specific position"""
+    try:
+        positions = get_user_positions(chat_id)
+        
+        if position_index >= len(positions) or position_index < 0:
+            bot.send_message(chat_id, "❌ Position not found.")
+            return
+        
+        position = positions[position_index]
+        symbol = position['token_symbol']
+        price_data = position['price_data']
+        current_value = position.get('current_value_usd', 0)
+        profit_usd = position.get('profit_usd', 0)
+        profit_pct = position.get('profit_percentage', 0)
+        
+        # Format profit/loss
+        if profit_pct >= 0:
+            profit_display = f"+{profit_pct:.2f}% / +${profit_usd:.4f}"
+            profit_emoji = "🟢"
+        else:
+            profit_display = f"{profit_pct:.2f}% / -${abs(profit_usd):.4f}"
+            profit_emoji = "🔴"
+        
+        # Format current price
+        current_price = price_data['current_price'] if price_data else 0
+        price_formatted = format_number_with_decimals(current_price)
+        
+        # Format market cap
+        market_cap = price_data['market_cap'] if price_data else 0
+        if market_cap >= 1000000000:
+            mcap_display = f"${market_cap/1000000000:.2f}B"
+        elif market_cap >= 1000000:
+            mcap_display = f"${market_cap/1000000:.2f}M"
+        elif market_cap >= 1000:
+            mcap_display = f"${market_cap/1000:.2f}K"
+        else:
+            mcap_display = f"${market_cap:.2f}"
+        
+        # Position details
+        token_amount = position['current_amount']
+        eth_value = current_value / 3000 if current_value > 0 else 0  # rough ETH conversion
+        
+        message = f"""
+📊 <b>Position #{position_index + 1}: ${symbol}</b>
+
+{profit_emoji} <b>Profit/Loss:</b> {profit_display}
+
+💰 <b>Value:</b> ${current_value:.2f} / {eth_value:.4f} ETH
+🏷️ <b>Amount:</b> {token_amount:.4f} {symbol}
+📊 <b>Current Price:</b> ${price_formatted}
+🌐 <b>Market Cap:</b> {mcap_display}
+
+💼 <b>Investment:</b>
+• Initial: ${position['initial_investment_usd']:.2f}
+• Date: {position['first_purchase_date'][:10]}
+• Wallet: <code>{position['wallet_address'][:8]}...{position['wallet_address'][-6:]}</code>
+
+📈 <b>Price Changes:</b>"""
+        
+        if price_data:
+            changes = [
+                ("5m", price_data.get('price_change_5m', 0)),
+                ("1h", price_data.get('price_change_1h', 0)),
+                ("6h", price_data.get('price_change_6h', 0)),
+                ("24h", price_data.get('price_change_24h', 0))
+            ]
+            
+            for period, change in changes:
+                if change != 0:
+                    change_emoji = "🟢" if change > 0 else "🔴"
+                    message += f"\n• {period}: {change_emoji} {change:+.2f}%"
+        
+        # Create action buttons
+        keyboard = create_inline_keyboard([
+            [
+                {"text": "🔄 Refresh", "callback_data": f"position_{position_index}"},
+                {"text": "📊 All Positions", "callback_data": "refresh_positions"}
+            ],
+            [{"text": "🏠 Main Menu", "callback_data": "back_to_menu"}]
+        ])
+        
+        bot.send_message(chat_id, message, reply_markup=keyboard)
+        
+    except Exception as e:
+        print(f"Error showing position detail: {e}")
+        bot.send_message(chat_id, "❌ Error retrieving position details.")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -3450,6 +4064,8 @@ def webhook():
                 handle_profile(chat_id)
             elif text.startswith('/wallet') or text.startswith('/wallets'):
                 handle_wallet_connection(chat_id, text)
+            elif text.startswith('/positions') or text.startswith('/pos'):
+                handle_positions(chat_id)
             else:
                 # Check for pending swap password confirmation first
                 if chat_id in PENDING_SWAPS:
