@@ -4140,11 +4140,16 @@ def handle_buy_usdc(chat_id, amount_str=None):
     try:
         if not FONBNK_AVAILABLE:
             bot.send_message(chat_id, """
-❌ <b>USDC Purchase Unavailable</b>
+⚠️ <b>USDC Purchase Setup Required</b>
 
-FunBonk integration is not configured. 
+FunBonk integration is not yet configured on this server.
 
-💡 <b>Alternative:</b>
+💡 <b>Administrator:</b> Please set up environment variables:
+• <code>FONBNK_MERCHANT_SOURCE</code>
+• <code>FONBNK_ENVIRONMENT</code> 
+• <code>FONBNK_WEBHOOK_SECRET</code>
+
+🔄 <b>Meanwhile, you can:</b>
 • Use centralized exchanges (Coinbase, Binance)
 • Use other fiat onramps
 • Send ETH/USDC directly to your wallet
