@@ -2657,6 +2657,7 @@ def set_bot_commands():
         {"command": "list", "description": "📊 Show tracked wallets"},
         {"command": "positions", "description": "💰 View your Base token positions"},
         {"command": "buy_usdc", "description": "💳 Buy USDC with FunBonk (fiat onramp)"},
+        {"command": "basename", "description": "🏷️ Lookup .base.eth identity & info"},
         {"command": "dashboard", "description": "📈 Portfolio dashboard & analytics"},
         {"command": "settings", "description": "⚙️ Customize notifications & alerts"},
         {"command": "wallets", "description": "💼 Manage connected wallets"},
@@ -2683,17 +2684,38 @@ def is_basename(text):
     return match.group().lower() if match else None
 
 def resolve_basename_to_address(basename):
-    """Resolve a basename to wallet address using proper Base name resolution"""
+    """
+    Resolve a basename to wallet address using Base name resolution
+    Enhanced for compatibility with OnchainKit patterns
+    """
     try:
         headers = {
             'User-Agent': 'TradeSeer-Bot/1.0',
             'Accept': 'application/json'
         }
         
-        print(f"🔍 Attempting to resolve basename: {basename}")
+        print(f"🔍 Resolving basename: {basename}")
         
-        # Method 1: Try ENS Universal Resolver (Primary method for Base names)
-        # According to OnchainKit docs, this is the correct way to resolve .base.eth names
+        # Method 1: Base Name Service API (Primary for .base.eth)
+        try:
+            base_api_url = f"https://resolver-api.basename.app/v1/resolve/{basename}"
+            print(f"📡 Trying Base Name Service API: {base_api_url}")
+            
+            base_response = requests.get(base_api_url, headers=headers, timeout=10)
+            print(f"📊 Base API status: {base_response.status_code}")
+            
+            if base_response.status_code == 200:
+                base_data = base_response.json()
+                print(f"📄 Base API data: {base_data}")
+                
+                if base_data.get('address'):
+                    address = base_data['address']
+                    print(f"✅ Resolved via Base API: {basename} -> {address}")
+                    return address
+        except Exception as e:
+            print(f"⚠️ Base API failed: {e}")
+        
+        # Method 2: ENS Universal Resolver with proper CCIP-Read support
         resolver_url = f"https://universal-resolver.ens.domains/resolve/{basename}"
         print(f"📡 Trying ENS Universal Resolver: {resolver_url}")
         
@@ -2900,6 +2922,88 @@ def extract_wallet_or_basename(text):
             return None, "basename_failed"
     
     return None, "none"
+
+def get_basename_identity(basename):
+    """
+    Get identity information for a basename (similar to OnchainKit Identity)
+    Returns avatar, description, and other metadata
+    """
+    try:
+        headers = {
+            'User-Agent': 'TradeSeer-Bot/1.0',
+            'Accept': 'application/json'
+        }
+        
+        # Try to get metadata from Base Name Service
+        metadata_url = f"https://resolver-api.basename.app/v1/metadata/{basename}"
+        
+        try:
+            response = requests.get(metadata_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                metadata = response.json()
+                
+                identity = {
+                    'name': basename,
+                    'address': metadata.get('address'),
+                    'avatar': metadata.get('avatar'),
+                    'description': metadata.get('description'),
+                    'twitter': metadata.get('twitter'),
+                    'discord': metadata.get('discord'),
+                    'email': metadata.get('email'),
+                    'url': metadata.get('url'),
+                    'location': metadata.get('location')
+                }
+                
+                # Clean up empty values
+                identity = {k: v for k, v in identity.items() if v}
+                
+                return identity
+        except Exception as e:
+            print(f"Error getting basename metadata: {e}")
+        
+        # Fallback: Basic identity with just name and resolved address
+        resolved_address = resolve_basename_to_address(basename)
+        if resolved_address:
+            return {
+                'name': basename,
+                'address': resolved_address
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error getting basename identity: {e}")
+        return None
+
+def format_basename_identity(identity):
+    """Format basename identity for display (like OnchainKit Identity component)"""
+    if not identity:
+        return "❌ Identity not found"
+    
+    message = f"🏷️ <b>{identity['name']}</b>\n"
+    message += f"📍 <code>{identity['address']}</code>\n"
+    
+    if identity.get('avatar'):
+        message += f"🖼️ Avatar: {identity['avatar']}\n"
+    
+    if identity.get('description'):
+        message += f"📝 {identity['description']}\n"
+    
+    social_links = []
+    if identity.get('twitter'):
+        social_links.append(f"🐦 Twitter: {identity['twitter']}")
+    if identity.get('discord'):
+        social_links.append(f"💬 Discord: {identity['discord']}")
+    if identity.get('url'):
+        social_links.append(f"🌐 Website: {identity['url']}")
+    
+    if social_links:
+        message += "\n🔗 <b>Social Links:</b>\n" + "\n".join(social_links)
+    
+    if identity.get('location'):
+        message += f"\n📍 Location: {identity['location']}"
+    
+    return message
 
 def get_token_transfers(wallet_address, chain, days=1):
     """Get token transfers for a wallet in the last X days"""
@@ -3982,6 +4086,7 @@ Try pasting a wallet address now! 📊
 • <code>/list</code> - Show tracked wallets  
 • <code>/positions</code> - View your Base token positions
 • <code>/buy_usdc</code> - Buy USDC with fiat (FunBonk)
+• <code>/basename</code> - Lookup .base.eth identity & info
 • <code>/dashboard</code> - Portfolio overview & analytics
 • <code>/settings</code> - Customize notifications & alerts
 • <code>/wallets</code> - Manage connected wallets
@@ -4157,6 +4262,18 @@ Please send the amount you want to purchase:
         # Handle order cancellation
         order_id = callback_data.replace("cancel_order_", "")
         handle_cancel_order(chat_id, order_id)
+    elif callback_data.startswith("track_basename_"):
+        # Handle tracking a basename
+        basename = callback_data.replace("track_basename_", "")
+        handle_track(chat_id, basename)
+    elif callback_data.startswith("analyze_basename_"):
+        # Handle analyzing a basename
+        basename = callback_data.replace("analyze_basename_", "")
+        handle_insights(chat_id, basename)
+    elif callback_data.startswith("activity_basename_"):
+        # Handle showing recent activity for a basename
+        basename = callback_data.replace("activity_basename_", "")
+        handle_purchases(chat_id, f"What did {basename} buy today?")
 
 def handle_buy_usdc(chat_id, amount_str=None):
     """Handle /buy_usdc command - create FunBonk payment link"""
@@ -4426,6 +4543,110 @@ Order {order_id} has been cancelled.
         print(f"Error cancelling order: {e}")
         bot.send_message(chat_id, "❌ Error cancelling order.")
 
+def handle_basename_identity(chat_id, basename_input=None):
+    """Handle /basename command - show identity information for a basename"""
+    try:
+        if not basename_input:
+            bot.send_message(chat_id, """
+🏷️ <b>Basename Identity Lookup</b>
+
+Get detailed information about any .base.eth name!
+
+<b>Usage:</b>
+<code>/basename [name.base.eth]</code>
+
+<b>Examples:</b>
+• <code>/basename alice.base.eth</code>
+• <code>/basename dami.base.eth</code>
+• <code>/identity bob.base.eth</code>
+
+💡 <b>What you'll see:</b>
+• Resolved wallet address
+• Avatar and description
+• Social media links
+• Location and website
+• ENS metadata
+
+🌐 <b>Powered by Base Name Service</b>
+""")
+            return
+        
+        # Extract basename if it's in the input
+        basename = is_basename(basename_input)
+        if not basename:
+            bot.send_message(chat_id, f"""
+❌ <b>Invalid Basename Format</b>
+
+<code>{basename_input}</code> is not a valid basename.
+
+✅ <b>Valid format:</b> <code>name.base.eth</code>
+
+<b>Examples:</b>
+• <code>alice.base.eth</code>
+• <code>dami.base.eth</code>
+• <code>my-name.base.eth</code>
+
+💡 <b>Tip:</b> Basenames must end with <code>.base.eth</code>
+""")
+            return
+        
+        # Show loading message
+        loading_msg = bot.send_message(chat_id, f"🔍 Looking up identity for <code>{basename}</code>...")
+        
+        # Get basename identity
+        identity = get_basename_identity(basename)
+        
+        if not identity:
+            bot.send_message(chat_id, f"""
+❌ <b>Basename Not Found</b>
+
+Could not resolve <code>{basename}</code>
+
+🔍 <b>Possible reasons:</b>
+• Basename doesn't exist
+• Name service temporarily unavailable
+• Typo in the basename
+
+💡 <b>Try:</b>
+• Double-check the spelling
+• Make sure it ends with <code>.base.eth</code>
+• Try again in a few moments
+""")
+            return
+        
+        # Format and display identity
+        identity_message = format_basename_identity(identity)
+        
+        # Get ETH balance if address is available
+        if identity.get('address'):
+            wallet_address = identity['address']
+            balance = get_wallet_balance(wallet_address, "base")
+            balance_str = f"{balance:.6f} ETH" if balance else "0 ETH"
+            
+            identity_message += f"\n\n💰 <b>Balance:</b> {balance_str}"
+        
+        # Create action buttons
+        keyboard_buttons = []
+        
+        if identity.get('address'):
+            keyboard_buttons.append([
+                {"text": "📊 Track Wallet", "callback_data": f"track_basename_{basename}"},
+                {"text": "🔍 Analyze", "callback_data": f"analyze_basename_{basename}"}
+            ])
+            keyboard_buttons.append([
+                {"text": "📈 Recent Activity", "callback_data": f"activity_basename_{basename}"}
+            ])
+        
+        keyboard_buttons.append([{"text": "🏠 Main Menu", "callback_data": "back_to_menu"}])
+        
+        keyboard = create_inline_keyboard(keyboard_buttons)
+        
+        bot.send_message(chat_id, identity_message, reply_markup=keyboard)
+        
+    except Exception as e:
+        print(f"Error handling basename identity: {e}")
+        bot.send_message(chat_id, "❌ Error looking up basename identity. Please try again later.")
+
 def handle_position_detail(chat_id, position_index):
     """Show detailed information for a specific position"""
     try:
@@ -4575,6 +4796,10 @@ def webhook():
                 parts = text.split(' ', 1)
                 amount_str = parts[1] if len(parts) > 1 else None
                 handle_buy_usdc(chat_id, amount_str)
+            elif text.startswith('/basename') or text.startswith('/identity'):
+                parts = text.split(' ', 1)
+                basename_input = parts[1] if len(parts) > 1 else None
+                handle_basename_identity(chat_id, basename_input)
             else:
                 # Check for pending swap password confirmation first
                 if chat_id in PENDING_SWAPS:
