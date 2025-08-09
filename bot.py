@@ -962,6 +962,10 @@ def create_main_menu_keyboard():
             {"text": "🔐 Create Wallet", "callback_data": "create_wallet"}
         ],
         [
+            {"text": "💰 Positions", "callback_data": "refresh_positions"},
+            {"text": "💳 Buy USDC", "callback_data": "buy_usdc_menu"}
+        ],
+        [
             {"text": "📊 Transaction History", "callback_data": "transaction_history"},
             {"text": "💱 Quick Swap", "callback_data": "quick_swap"}
         ],
@@ -4088,6 +4092,8 @@ To quickly swap tokens, use this format:
         handle_start(chat_id)
     elif callback_data == "refresh_positions":
         handle_positions(chat_id)
+    elif callback_data == "buy_usdc_menu":
+        handle_buy_usdc(chat_id)
     elif callback_data.startswith("position_"):
         # Handle individual position details
         try:
