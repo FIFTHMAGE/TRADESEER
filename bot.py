@@ -76,6 +76,7 @@ PORT = int(os.getenv('PORT', 5000))
 FONBNK_MERCHANT_SOURCE = os.getenv('FONBNK_MERCHANT_SOURCE', '')  # Your FunBonk merchant source ID
 FONBNK_ENVIRONMENT = os.getenv('FONBNK_ENVIRONMENT', 'sandbox')  # 'sandbox' or 'production'
 FONBNK_WEBHOOK_SECRET = os.getenv('FONBNK_WEBHOOK_SECRET', '')  # Webhook verification secret
+FONBNK_URL_SIGNATURE_SECRET = os.getenv('FONBNK_URL_SIGNATURE_SECRET', FONBNK_WEBHOOK_SECRET)  # JWT signing secret
 
 # Validate environment variables
 if not TELEGRAM_BOT_TOKEN:
@@ -1893,35 +1894,57 @@ def format_number_with_decimals(number):
         return f"{number:.6f}".rstrip('0').rstrip('.')
 
 def generate_fonbnk_payment_url(wallet_address, amount_usd, order_id, network="base", currency="USDC"):
-    """Generate FunBonk payment widget URL"""
+    """Generate FunBonk payment widget URL according to their documentation"""
     try:
         if not FONBNK_AVAILABLE:
             return None, "FunBonk integration not configured"
         
-        # FunBonk base URLs
+        # Import JWT library
+        import jwt
+        import uuid
+        from urllib.parse import quote
+        
+        # FunBonk base URLs (correct URLs from documentation)
         if FONBNK_ENVIRONMENT == "production":
             base_url = "https://pay.fonbnk.com"
         else:
-            base_url = "https://sandbox.fonbnk.com"
+            base_url = "https://sandbox-pay.fonbnk.com"
         
-        # Build payment URL with parameters
-        params = {
-            "source": FONBNK_MERCHANT_SOURCE,
+        # Generate JWT signature (required by FunBonk)
+        payload = {
+            "uid": str(uuid.uuid4()),  # Unique identifier required
             "address": wallet_address,
             "amount": str(amount_usd),
             "currency": currency,
             "network": network,
-            "orderId": order_id,
-            "theme": "dark",  # Match your bot's theme
-            "hideHeader": "true"  # Cleaner widget appearance
+            "orderId": order_id
+        }
+        
+        # Create JWT token using URL signature secret (as per documentation)
+        jwt_token = jwt.encode(
+            payload,
+            FONBNK_URL_SIGNATURE_SECRET,
+            algorithm="HS256"
+        )
+        
+        # Build payment URL with required parameters
+        params = {
+            "source": FONBNK_MERCHANT_SOURCE,
+            "signature": jwt_token,
+            "address": wallet_address,
+            "amount": str(amount_usd),
+            "currency": currency,
+            "network": network
         }
         
         # Create URL with parameters
-        param_string = "&".join([f"{key}={value}" for key, value in params.items()])
+        param_string = "&".join([f"{key}={quote(str(value))}" for key, value in params.items()])
         payment_url = f"{base_url}?{param_string}"
         
         return payment_url, None
         
+    except ImportError:
+        return None, "PyJWT library not installed. Run: pip install PyJWT"
     except Exception as e:
         print(f"Error generating FunBonk payment URL: {e}")
         return None, str(e)
@@ -4148,6 +4171,9 @@ FunBonk integration is not yet configured on this server.
 • <code>FONBNK_MERCHANT_SOURCE</code>
 • <code>FONBNK_ENVIRONMENT</code> 
 • <code>FONBNK_WEBHOOK_SECRET</code>
+
+🔧 <b>Also ensure PyJWT is installed:</b>
+• Added to requirements.txt
 
 🔄 <b>Meanwhile, you can:</b>
 • Use centralized exchanges (Coinbase, Binance)
