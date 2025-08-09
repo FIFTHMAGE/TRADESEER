@@ -2748,15 +2748,22 @@ def resolve_basename_to_address(basename):
         # Method 4: Manual Base Registry Check (Fallback)
         print(f"📡 All API methods failed, trying hardcoded resolution for {basename}")
         
-        # For testing, add some known basenames
+        # For testing, add some known basenames (with proper checksumming)
         known_basenames = {
-            'dami.base.eth': '0x742d35Cc6634C0532925a3b8D404d3aaBcE5bd38',  # Example
-            'alice.base.eth': '0x1234567890123456789012345678901234567890',  # Example
-            'test.base.eth': '0x0987654321098765432109876543210987654321'    # Example
+            'dami.base.eth': '0x742d35Cc6634C0532925a3b8D404d3aaBcE5bd38',
+            'alice.base.eth': '0x1234567890123456789012345678901234567890',
+            'test.base.eth': '0x0987654321098765432109876543210987654321'
         }
         
         if basename.lower() in known_basenames:
             address = known_basenames[basename.lower()]
+            # Ensure address is properly checksummed for Web3
+            if WEB3_AVAILABLE:
+                try:
+                    from eth_utils import to_checksum_address
+                    address = to_checksum_address(address)
+                except:
+                    pass
             print(f"✅ Resolved via known basenames: {basename} -> {address}")
             return address
         
@@ -2957,47 +2964,53 @@ def get_basename_identity(basename):
     Returns avatar, description, and other metadata
     """
     try:
+        # First resolve the basename to an address
+        address = resolve_basename_to_address(basename)
+        if not address:
+            return None
+        
+        # Create basic identity with resolved address
+        identity = {
+            'name': basename,
+            'address': address,
+            'description': f'Base name {basename}',
+            'avatar': None,
+            'twitter': None,
+            'discord': None,
+            'url': None,
+            'location': None
+        }
+        
+        # Try to get metadata from Base Name Service API
         headers = {
             'User-Agent': 'TradeSeer-Bot/1.0',
             'Accept': 'application/json'
         }
         
-        # Try to get metadata from Base Name Service
         metadata_url = f"https://resolver-api.basename.app/v1/metadata/{basename}"
         
         try:
-            response = requests.get(metadata_url, headers=headers, timeout=10)
+            response = requests.get(metadata_url, headers=headers, timeout=5)
             if response.status_code == 200:
                 metadata = response.json()
                 
-                identity = {
-                    'name': basename,
-                    'address': metadata.get('address'),
-                    'avatar': metadata.get('avatar'),
-                    'description': metadata.get('description'),
-                    'twitter': metadata.get('twitter'),
-                    'discord': metadata.get('discord'),
-                    'email': metadata.get('email'),
-                    'url': metadata.get('url'),
-                    'location': metadata.get('location')
-                }
-                
-                # Clean up empty values
-                identity = {k: v for k, v in identity.items() if v}
-                
-                return identity
+                # Update identity with API data if available
+                if metadata.get('avatar'):
+                    identity['avatar'] = metadata['avatar']
+                if metadata.get('description'):
+                    identity['description'] = metadata['description']
+                if metadata.get('twitter'):
+                    identity['twitter'] = metadata['twitter']
+                if metadata.get('discord'):
+                    identity['discord'] = metadata['discord']
+                if metadata.get('url'):
+                    identity['url'] = metadata['url']
+                if metadata.get('location'):
+                    identity['location'] = metadata['location']
         except Exception as e:
-            print(f"Error getting basename metadata: {e}")
+            print(f"API metadata fetch failed, using basic identity: {e}")
         
-        # Fallback: Basic identity with just name and resolved address
-        resolved_address = resolve_basename_to_address(basename)
-        if resolved_address:
-            return {
-                'name': basename,
-                'address': resolved_address
-            }
-        
-        return None
+        return identity
         
     except Exception as e:
         print(f"Error getting basename identity: {e}")
