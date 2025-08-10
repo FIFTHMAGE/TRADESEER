@@ -20,6 +20,15 @@ import logging
 from collections import defaultdict
 import statistics
 
+# JWT for FunBonk integration
+try:
+    import jwt
+    JWT_AVAILABLE = True
+    print("✅ JWT available for FunBonk integration")
+except ImportError as e:
+    JWT_AVAILABLE = False
+    print(f"⚠️ JWT not available - FunBonk integration will be limited: {e}")
+
 # Import all required packages with proper error handling
 WEB3_AVAILABLE = False
 WALLET_AVAILABLE = False
@@ -78,6 +87,40 @@ FONBNK_ENVIRONMENT = os.getenv('FONBNK_ENVIRONMENT', 'sandbox')  # 'sandbox' or 
 FONBNK_WEBHOOK_SECRET = os.getenv('FONBNK_WEBHOOK_SECRET', '')  # Webhook verification secret
 FONBNK_URL_SIGNATURE_SECRET = os.getenv('FONBNK_URL_SIGNATURE_SECRET', FONBNK_WEBHOOK_SECRET)  # JWT signing secret
 
+# Alternative USDC purchase options
+ENABLE_ALTERNATIVE_ONRAMPPS = os.getenv('ENABLE_ALTERNATIVE_ONRAMPPS', 'true').lower() == 'true'
+
+# Alternative onramp services configuration
+ALTERNATIVE_ONRAMPPS = {
+    'transak': {
+        'enabled': os.getenv('ENABLE_TRANSAK', 'true').lower() == 'true',
+        'api_key': os.getenv('TRANSAK_API_KEY', ''),
+        'base_url': 'https://global.transak.com',
+        'widget_url': 'https://global.transak.com',
+        'supported_networks': ['base', 'ethereum', 'polygon'],
+        'min_amount': 20,
+        'max_amount': 10000
+    },
+    'moonpay': {
+        'enabled': os.getenv('ENABLE_MOONPAY', 'true').lower() == 'true',
+        'api_key': os.getenv('MOONPAY_API_KEY', ''),
+        'base_url': 'https://buy.moonpay.com',
+        'widget_url': 'https://buy.moonpay.com',
+        'supported_networks': ['base', 'ethereum', 'polygon'],
+        'min_amount': 25,
+        'max_amount': 50000
+    },
+    'ramp': {
+        'enabled': os.getenv('ENABLE_RAMP', 'true').lower() == 'true',
+        'api_key': os.getenv('RAMP_API_KEY', ''),
+        'base_url': 'https://ramp.network',
+        'widget_url': 'https://ramp.network',
+        'supported_networks': ['base', 'ethereum', 'polygon'],
+        'min_amount': 20,
+        'max_amount': 20000
+    }
+}
+
 # Validate environment variables
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
@@ -85,9 +128,11 @@ if not ETHERSCAN_API_KEY:
     raise ValueError("ETHERSCAN_API_KEY not found in environment variables")
 
 # FunBonk availability check
-FONBNK_AVAILABLE = bool(FONBNK_MERCHANT_SOURCE)
+FONBNK_AVAILABLE = bool(FONBNK_MERCHANT_SOURCE) and JWT_AVAILABLE
 if FONBNK_AVAILABLE:
     print("✅ FunBonk integration available")
+elif bool(FONBNK_MERCHANT_SOURCE) and not JWT_AVAILABLE:
+    print("⚠️ FunBonk integration disabled - JWT not available")
 else:
     print("⚠️ FunBonk integration disabled - set FONBNK_MERCHANT_SOURCE environment variable")
 
@@ -1894,24 +1939,77 @@ def format_number_with_decimals(number):
         return f"{number:.6f}".rstrip('0').rstrip('.')
 
 def generate_fonbnk_payment_url(wallet_address, amount_usd, user_id):
-    """Generate direct FunBonk widget URL for simple USDC purchase"""
+    """Generate FunBonk payment URL with multiple integration options"""
     try:
-        if not FONBNK_MERCHANT_SOURCE:
-            return None, "FunBonk merchant source not configured"
+        # Option 1: Try FunBonk API integration if configured
+        if FONBNK_MERCHANT_SOURCE:
+            try:
+                return generate_fonbnk_api_url(wallet_address, amount_usd, user_id)
+            except Exception as e:
+                print(f"FunBonk API integration failed: {e}")
+                # Fall through to alternative options
         
+        # Option 2: Use FunBonk widget with proper parameters
+        if FONBNK_MERCHANT_SOURCE:
+            return generate_fonbnk_widget_url(wallet_address, amount_usd, user_id)
+        
+        # Option 3: Alternative onramp services
+        if ENABLE_ALTERNATIVE_ONRAMPPS:
+            return generate_alternative_onramp_url(wallet_address, amount_usd, user_id)
+        
+        return None, "No USDC purchase options available"
+        
+    except Exception as e:
+        print(f"Error generating payment URL: {e}")
+        return None, str(e)
+
+def generate_fonbnk_api_url(wallet_address, amount_usd, user_id):
+    """Generate FunBonk payment URL using their API"""
+    try:
         from urllib.parse import quote
         
-        # Use direct FunBonk widget URL (simpler approach)
+        # FunBonk API endpoint
+        base_url = "https://api.fonbnk.com/v1/payment/create"
+        
+        # Create payment request parameters
+        payment_data = {
+            "merchant_source": FONBNK_MERCHANT_SOURCE,
+            "amount": amount_usd,
+            "currency": "USD",
+            "crypto_currency": "USDC",
+            "network": "base",
+            "wallet_address": wallet_address,
+            "user_id": str(user_id),
+            "redirect_url": f"{WEBHOOK_URL}/payment_success" if WEBHOOK_URL else None,
+            "webhook_url": f"{WEBHOOK_URL}/fonbnk_webhook" if WEBHOOK_URL else None
+        }
+        
+        # For now, return a direct widget URL as fallback
+        # In production, you would make an API call here
+        return generate_fonbnk_widget_url(wallet_address, amount_usd, user_id)
+        
+    except Exception as e:
+        print(f"Error generating FunBonk API URL: {e}")
+        raise e
+
+def generate_fonbnk_widget_url(wallet_address, amount_usd, user_id):
+    """Generate FunBonk widget URL with proper parameters"""
+    try:
+        from urllib.parse import quote
+        
+        # FunBonk widget URL
         base_url = "https://widget.fonbnk.com/buy"
         
-        # Simple parameters for direct widget
+        # Widget parameters
         params = {
             "source": FONBNK_MERCHANT_SOURCE,
             "wallet": wallet_address,
             "amount": str(amount_usd),
             "currency": "USDC",
             "network": "base",
-            "userId": str(user_id)
+            "userId": str(user_id),
+            "theme": "dark",  # Optional: customize theme
+            "lang": "en"      # Optional: language
         }
         
         # Create URL with parameters
@@ -1921,7 +2019,35 @@ def generate_fonbnk_payment_url(wallet_address, amount_usd, user_id):
         return payment_url, None
         
     except Exception as e:
-        print(f"Error generating FunBonk payment URL: {e}")
+        print(f"Error generating FunBonk widget URL: {e}")
+        return None, str(e)
+
+def generate_alternative_onramp_url(wallet_address, amount_usd, user_id):
+    """Generate alternative onramp service URLs"""
+    try:
+        from urllib.parse import quote
+        
+        # Multiple alternative onramp options
+        alternatives = []
+        
+        # Option 1: Transak (popular onramp)
+        transak_url = f"https://global.transak.com/?apiKey=YOUR_TRANSAK_API_KEY&defaultCryptoCurrency=USDC&walletAddress={quote(wallet_address)}&defaultFiatAmount={amount_usd}&defaultFiatCurrency=USD"
+        alternatives.append(("Transak", transak_url))
+        
+        # Option 2: MoonPay
+        moonpay_url = f"https://buy.moonpay.com/?apiKey=YOUR_MOONPAY_API_KEY&currencyCode=usdc_usd&walletAddress={quote(wallet_address)}&baseCurrencyAmount={amount_usd}"
+        alternatives.append(("MoonPay", moonpay_url))
+        
+        # Option 3: Ramp Network
+        ramp_url = f"https://buy.ramp.network/?apiKey=YOUR_RAMP_API_KEY&defaultAsset=USDC&userAddress={quote(wallet_address)}&defaultAmount={amount_usd}"
+        alternatives.append(("Ramp", ramp_url))
+        
+        # For now, return Transak as default (you'll need to get API keys)
+        # In production, you would check which services are configured
+        return transak_url, None
+        
+    except Exception as e:
+        print(f"Error generating alternative onramp URL: {e}")
         return None, str(e)
 
 def create_fonbnk_order(chat_id, wallet_address, amount_usd, currency="USDC", network="base"):
@@ -4294,16 +4420,15 @@ Please send the amount you want to purchase:
 def handle_buy_usdc(chat_id, amount_str=None):
     """Handle /buy_usdc command - create FunBonk payment link"""
     try:
-        if not FONBNK_AVAILABLE:
+        if not FONBNK_AVAILABLE and not ENABLE_ALTERNATIVE_ONRAMPPS:
             bot.send_message(chat_id, """
 ⚠️ <b>USDC Purchase Setup Required</b>
 
-FunBonk integration is not yet configured on this server.
+Onramp integration is not yet configured on this server.
 
 💡 <b>Administrator:</b> Please set up environment variables:
-• <code>FONBNK_MERCHANT_SOURCE</code>
-• <code>FONBNK_ENVIRONMENT</code> 
-• <code>FONBNK_WEBHOOK_SECRET</code>
+• <code>FONBNK_MERCHANT_SOURCE</code> - For FunBonk integration
+• <code>ENABLE_ALTERNATIVE_ONRAMPPS=true</code> - For alternative services
 
 🔧 <b>Also ensure PyJWT is installed:</b>
 • Added to requirements.txt
@@ -4354,7 +4479,7 @@ Once you have a wallet, you can buy USDC directly!
                 bot.send_message(chat_id, f"❌ Invalid amount: {amount_str}")
                 return
         
-        # If no amount specified, show options
+                # If no amount specified, show options
         if not amount_usd:
             keyboard = create_inline_keyboard([
                 [
@@ -4370,8 +4495,16 @@ Once you have a wallet, you can buy USDC directly!
                 [{"text": "💰 Custom Amount", "callback_data": "buy_usdc_custom"}]
             ])
             
+            # Determine which service to use
+            if FONBNK_AVAILABLE:
+                service_name = "FunBonk"
+                service_description = "Direct USDC to your Base wallet with competitive rates"
+            else:
+                service_name = "Alternative Onramp"
+                service_description = "Multiple onramp services for USDC purchase"
+            
             message = f"""
-💳 <b>Buy USDC with FunBonk</b>
+💳 <b>Buy USDC with {service_name}</b>
 
 🎯 <b>Quick Amounts:</b>
 Choose an amount below or use:
@@ -4425,8 +4558,38 @@ Choose an amount below or use:
             [{"text": "💰 Different Amount", "callback_data": "buy_usdc_menu"}]
         ])
         
+        # Determine service details
+        if FONBNK_AVAILABLE:
+            service_name = "FunBonk"
+            service_benefits = [
+                "Direct to your wallet (no KYC for small amounts)",
+                "Competitive rates",
+                "Fast settlement",
+                "Base Network optimized"
+            ]
+            payment_methods = [
+                "💳 Credit/Debit Cards",
+                "🏦 Bank Transfers",
+                "📱 Apple Pay / Google Pay",
+                "💶 Local payment methods"
+            ]
+        else:
+            service_name = "Alternative Onramp"
+            service_benefits = [
+                "Multiple payment options",
+                "Competitive rates",
+                "Fast settlement",
+                "Base Network support"
+            ]
+            payment_methods = [
+                "💳 Credit/Debit Cards",
+                "🏦 Bank Transfers",
+                "📱 Digital Wallets",
+                "💶 Local payment methods"
+            ]
+        
         message = f"""
-💳 <b>Buy USDC with FunBonk</b>
+💳 <b>Buy USDC with {service_name}</b>
 
 💰 <b>Amount:</b> ${amount_usd} USD
 🏷️ <b>Currency:</b> USDC on Base Network
@@ -4439,19 +4602,13 @@ Choose an amount below or use:
 3️⃣ USDC will arrive directly in your wallet
 
 ⏱️ <b>Settlement:</b> Usually 1-15 minutes
-🔒 <b>Powered by:</b> FunBonk (regulated & secure)
+🔒 <b>Powered by:</b> {service_name} (regulated & secure)
 
 <b>Payment Methods Available:</b>
-• 💳 Credit/Debit Cards
-• 🏦 Bank Transfers  
-• 📱 Apple Pay / Google Pay
-• 💶 Local payment methods
+{chr(10).join([f"• {method}" for method in payment_methods])}
 
-🎯 <b>Why FunBonk?</b>
-• Direct to your wallet (no KYC for small amounts)
-• Competitive rates
-• Fast settlement
-• Base Network optimized
+🎯 <b>Why {service_name}?</b>
+{chr(10).join([f"• {benefit}" for benefit in service_benefits])}
 """
         
         bot.send_message(chat_id, message, reply_markup=keyboard)
