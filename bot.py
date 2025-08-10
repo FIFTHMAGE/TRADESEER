@@ -4363,7 +4363,9 @@ To quickly swap tokens, use this format:
     elif callback_data == "refresh_positions":
         handle_positions(chat_id)
     elif callback_data == "buy_usdc_menu":
-        handle_buy_usdc(chat_id)
+        response = handle_buy_usdc(chat_id)
+        if response:
+            bot.send_message(chat_id, response, parse_mode='Markdown')
     elif callback_data.startswith("position_"):
         # Handle individual position details
         try:
@@ -4393,7 +4395,9 @@ Please send the amount you want to purchase:
             # Extract amount from callback data
             try:
                 amount = float(callback_data.split("_")[2])
-                handle_buy_usdc(chat_id, str(amount))
+                response = handle_buy_usdc(chat_id, str(amount))
+                if response:
+                    bot.send_message(chat_id, response, parse_mode='Markdown')
             except (ValueError, IndexError):
                 bot.send_message(chat_id, "❌ Invalid amount selected.")
     elif callback_data.startswith("check_order_"):
@@ -4859,7 +4863,9 @@ def webhook():
             elif text.startswith('/buy_usdc') or text.startswith('/buyusdc'):
                 parts = text.split(' ', 1)
                 amount_str = parts[1] if len(parts) > 1 else None
-                handle_buy_usdc(chat_id, amount_str)
+                response = handle_buy_usdc(chat_id, amount_str)
+                if response:
+                    bot.send_message(chat_id, response, parse_mode='Markdown')
             elif text.startswith('/basename') or text.startswith('/identity'):
                 parts = text.split(' ', 1)
                 basename_input = parts[1] if len(parts) > 1 else None
