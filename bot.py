@@ -4418,204 +4418,87 @@ Please send the amount you want to purchase:
         handle_purchases(chat_id, f"What did {basename} buy today?")
 
 def handle_buy_usdc(chat_id, amount_str=None):
-    """Handle /buy_usdc command - create FunBonk payment link"""
+    """Handle USDC purchase requests"""
     try:
-        if not FONBNK_AVAILABLE and not ENABLE_ALTERNATIVE_ONRAMPPS:
-            bot.send_message(chat_id, """
-⚠️ <b>USDC Purchase Setup Required</b>
-
-Onramp integration is not yet configured on this server.
-
-💡 <b>Administrator:</b> Please set up environment variables:
-• <code>FONBNK_MERCHANT_SOURCE</code> - For FunBonk integration
-• <code>ENABLE_ALTERNATIVE_ONRAMPPS=true</code> - For alternative services
-
-🔧 <b>Also ensure PyJWT is installed:</b>
-• Added to requirements.txt
-
-🔄 <b>Meanwhile, you can:</b>
-• Use centralized exchanges (Coinbase, Binance)
-• Use other fiat onramps
-• Send ETH/USDC directly to your wallet
-
-<b>Commands:</b>
-• <code>/wallets</code> - View your wallet addresses
-• <code>/positions</code> - Check your current holdings
-""")
-            return
+        # Get user's wallets
+        wallets = get_user_wallets(chat_id)
+        if not wallets:
+            return "❌ No wallets found. Please connect a wallet first using /connect."
         
-        # Get user's connected wallets
-        user_wallets_data = get_user_wallets(chat_id)
+        # Use the first active wallet
+        wallet = wallets[0]
+        # Handle tuple format: (wallet_address, wallet_name, is_active)
+        wallet_addr = wallet[0] if isinstance(wallet, tuple) else wallet['wallet_address']
         
-        if not user_wallets_data:
-            bot.send_message(chat_id, """
-❌ <b>No Wallet Connected</b>
-
-You need to connect a wallet first to buy USDC.
-
-💡 <b>Get Started:</b>
-• <code>/wallets</code> - Connect or create a wallet
-• <code>create wallet name:MyWallet password:SecurePass123</code>
-
-Once you have a wallet, you can buy USDC directly!
-""")
-            return
-        
-        # Parse amount if provided
-        amount_usd = None
         if amount_str:
+            # User specified an amount
             try:
-                amount_usd = float(amount_str)
-                if amount_usd <= 0:
-                    bot.send_message(chat_id, "❌ Amount must be greater than 0")
-                    return
-                if amount_usd < 10:
-                    bot.send_message(chat_id, "❌ Minimum purchase amount is $10 USD")
-                    return
-                if amount_usd > 10000:
-                    bot.send_message(chat_id, "❌ Maximum purchase amount is $10,000 USD per transaction")
-                    return
+                amount = float(amount_str)
+                if amount <= 0:
+                    return "❌ Amount must be greater than 0."
+                
+                # Generate FunBonk payment URL
+                if FONBNK_AVAILABLE:
+                    payment_url = generate_fonbnk_payment_url(wallet_addr, amount, str(chat_id))
+                    return f"""💳 **USDC Purchase - ${amount}**
+
+🔗 **Payment Link:** {payment_url}
+
+💼 **Wallet:** `{wallet_addr}`
+🌐 **Network:** Base
+💱 **Currency:** USDC
+
+💡 **Features:**
+• Pay with card, bank transfer, Apple Pay
+• Instant USDC delivery to your wallet
+• Secure and regulated service
+
+⚠️ **Note:** Complete the payment on FunBonk to receive your USDC."""
+                else:
+                    return "❌ USDC purchase service is currently unavailable. Please try again later."
+                    
             except ValueError:
-                bot.send_message(chat_id, f"❌ Invalid amount: {amount_str}")
-                return
-        
-                # If no amount specified, show options
-        if not amount_usd:
-            keyboard = create_inline_keyboard([
-                [
-                    {"text": "$25", "callback_data": "buy_usdc_25"},
-                    {"text": "$50", "callback_data": "buy_usdc_50"},
-                    {"text": "$100", "callback_data": "buy_usdc_100"}
-                ],
-                [
-                    {"text": "$250", "callback_data": "buy_usdc_250"},
-                    {"text": "$500", "callback_data": "buy_usdc_500"},
-                    {"text": "$1000", "callback_data": "buy_usdc_1000"}
-                ],
-                [{"text": "💰 Custom Amount", "callback_data": "buy_usdc_custom"}]
-            ])
+                return "❌ Invalid amount. Please enter a valid number."
+        else:
+            # Show USDC purchase menu
+            user_wallets_data = get_user_wallets(chat_id)
+            if not user_wallets_data:
+                return "❌ No wallets found. Please connect a wallet first."
             
-            # Determine which service to use
-            if FONBNK_AVAILABLE:
-                service_name = "FunBonk"
-                service_description = "Direct USDC to your Base wallet with competitive rates"
-            else:
-                service_name = "Alternative Onramp"
-                service_description = "Multiple onramp services for USDC purchase"
-            
-            message = f"""
-💳 <b>Buy USDC with {service_name}</b>
+            message = f"""💳 **Buy USDC**
 
-🎯 <b>Quick Amounts:</b>
-Choose an amount below or use:
-<code>/buy_usdc [amount]</code>
-
-💼 <b>Connected Wallets:</b>"""
+💼 **Connected Wallets:**"""
             
             for i, wallet in enumerate(user_wallets_data[:3], 1):  # Show first 3 wallets
-                wallet_addr = wallet['wallet_address']
+                # Handle tuple format: (wallet_address, wallet_name, is_active)
+                wallet_addr = wallet[0] if isinstance(wallet, tuple) else wallet['wallet_address']
+                
                 balance = get_wallet_balance(wallet_addr)
                 balance_str = f"{balance:.4f} ETH" if balance else "0 ETH"
-                message += f"\n• {wallet.get('wallet_name', f'Wallet #{i}')}: {balance_str}"
+                
+                # Get wallet name safely
+                wallet_name = wallet[1] if isinstance(wallet, tuple) else wallet.get('wallet_name', f'Wallet #{i}')
+                message += f"\n• {wallet_name}: {balance_str}"
             
             message += f"""
 
-💡 <b>Features:</b>
+💡 **Features:**
 • Pay with card, bank transfer, Apple Pay
-• Direct USDC to your Base wallet
-• Instant or fast settlement
-• Secure & regulated
+• Instant USDC delivery to your wallet
+• Secure and regulated service
 
-⚡ <b>Base Network Benefits:</b>
-• Low fees (~$0.01)
-• Fast transactions
-• Perfect for DeFi
-"""
+💰 **Quick Purchase:**
+• /buy_usdc 100 - Buy $100 USDC
+• /buy_usdc 500 - Buy $500 USDC
+• /buy_usdc 1000 - Buy $1000 USDC
+
+💬 **Custom Amount:** /buy_usdc [amount]"""
             
-            bot.send_message(chat_id, message, reply_markup=keyboard)
-            return
-        
-        # Use the first wallet if multiple exist
-        target_wallet = user_wallets_data[0]
-        wallet_address = target_wallet['wallet_address']
-        wallet_name = target_wallet.get('wallet_name', 'Primary Wallet')
-        
-        # Get user info for tracking
-        user = get_user_by_chat_id(chat_id)
-        if not user:
-            bot.send_message(chat_id, "❌ User not found. Please use /start first.")
-            return
-        
-        # Generate direct FunBonk payment URL
-        payment_url, error = generate_fonbnk_payment_url(wallet_address, amount_usd, user['user_id'])
-        if error:
-            bot.send_message(chat_id, f"❌ Error creating payment link: {error}")
-            return
-        
-        # Create payment message with direct link button
-        keyboard = create_inline_keyboard([
-            [{"text": "💳 Buy USDC Now", "url": payment_url}],
-            [{"text": "💰 Different Amount", "callback_data": "buy_usdc_menu"}]
-        ])
-        
-        # Determine service details
-        if FONBNK_AVAILABLE:
-            service_name = "FunBonk"
-            service_benefits = [
-                "Direct to your wallet (no KYC for small amounts)",
-                "Competitive rates",
-                "Fast settlement",
-                "Base Network optimized"
-            ]
-            payment_methods = [
-                "💳 Credit/Debit Cards",
-                "🏦 Bank Transfers",
-                "📱 Apple Pay / Google Pay",
-                "💶 Local payment methods"
-            ]
-        else:
-            service_name = "Alternative Onramp"
-            service_benefits = [
-                "Multiple payment options",
-                "Competitive rates",
-                "Fast settlement",
-                "Base Network support"
-            ]
-            payment_methods = [
-                "💳 Credit/Debit Cards",
-                "🏦 Bank Transfers",
-                "📱 Digital Wallets",
-                "💶 Local payment methods"
-            ]
-        
-        message = f"""
-💳 <b>Buy USDC with {service_name}</b>
-
-💰 <b>Amount:</b> ${amount_usd} USD
-🏷️ <b>Currency:</b> USDC on Base Network
-📍 <b>Wallet:</b> {wallet_name}
-🔗 <b>Address:</b> <code>{wallet_address}</code>
-
-💡 <b>Instructions:</b>
-1️⃣ Click "Buy USDC Now" below
-2️⃣ Complete payment with your preferred method
-3️⃣ USDC will arrive directly in your wallet
-
-⏱️ <b>Settlement:</b> Usually 1-15 minutes
-🔒 <b>Powered by:</b> {service_name} (regulated & secure)
-
-<b>Payment Methods Available:</b>
-{chr(10).join([f"• {method}" for method in payment_methods])}
-
-🎯 <b>Why {service_name}?</b>
-{chr(10).join([f"• {benefit}" for benefit in service_benefits])}
-"""
-        
-        bot.send_message(chat_id, message, reply_markup=keyboard)
-        
+            return message
+            
     except Exception as e:
         print(f"Error handling buy USDC: {e}")
-        bot.send_message(chat_id, "❌ Error processing USDC purchase. Please try again later.")
+        return "❌ Error processing USDC purchase. Please try again later."
 
 def handle_check_order_status(chat_id, order_id):
     """Handle order status check"""
