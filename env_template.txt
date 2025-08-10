@@ -1,0 +1,38 @@
+# FunBonk USDC Integration Configuration
+# Copy this file to .env and fill in your actual values
+
+# FunBonk Configuration (Primary Service)
+FONBNK_MERCHANT_SOURCE=your_merchant_source_id_here
+FONBNK_ENVIRONMENT=sandbox  # 'sandbox' or 'production'
+FONBNK_WEBHOOK_SECRET=your_webhook_secret_here
+FONBNK_URL_SIGNATURE_SECRET=your_jwt_signing_secret_here
+
+# Alternative Onramp Services (Fallback Options)
+ENABLE_ALTERNATIVE_ONRAMPPS=true
+
+# Transak Integration
+ENABLE_TRANSAK=true
+TRANSAK_API_KEY=your_transak_api_key_here
+
+# MoonPay Integration
+ENABLE_MOONPAY=true
+MOONPAY_API_KEY=your_moonpay_api_key_here
+
+# Ramp Integration
+ENABLE_RAMP=true
+RAMP_API_KEY=your_ramp_api_key_here
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+
+# Database Configuration
+DATABASE_URL=sqlite:///tradeseer.db
+
+# Web3 Configuration
+WEB3_PROVIDER_URI=https://mainnet.base.org
+ETHERSCAN_API_KEY=your_etherscan_api_key_here
+
+# Optional: Additional Services
+ENABLE_DEXSCREENER=true
+ENABLE_COINGECKO=true
+ENABLE_PUMPFUN=true
