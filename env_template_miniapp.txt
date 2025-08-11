@@ -1,0 +1,23 @@
+# TradeSeer Mini App Environment Variables
+# Copy this file to .env.local and fill in your actual values
+
+# MiniKit Configuration (Required)
+NEXT_PUBLIC_CDP_CLIENT_API_KEY=your_coinbase_developer_platform_api_key_here
+
+# App Configuration
+NEXT_PUBLIC_ONCHAINKIT_PROJECT_NAME=TradeSeer
+NEXT_PUBLIC_URL=https://your-app-domain.com
+
+# App Assets (Optional - will use defaults if not set)
+NEXT_PUBLIC_APP_HERO_IMAGE=https://your-domain.com/hero-image.png
+NEXT_PUBLIC_SPLASH_IMAGE=https://your-domain.com/splash-image.png
+NEXT_PUBLIC_SPLASH_BACKGROUND_COLOR=#1e3a8a
+
+# API Keys (Optional - for enhanced functionality)
+NEXT_PUBLIC_ETHERSCAN_API_KEY=your_etherscan_api_key_here
+
+# Database Configuration (Optional - for persistent storage)
+DATABASE_URL=your_database_connection_string_here
+
+# Webhook Configuration (Optional)
+WEBHOOK_SECRET=your_webhook_secret_here

@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradeSeer Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .animate-pulse-slow {
+            animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <div class="w-20 h-20 mx-auto mb-4 bg-white bg-opacity-20 rounded-full flex items-center justify-center">
+                <span class="text-4xl">🔮</span>
+            </div>
+            <h1 class="text-4xl font-bold text-white mb-2">TradeSeer Bot</h1>
+            <p class="text-white text-opacity-80 text-lg">Smart Wallet Tracking Dashboard</p>
+        </div>
+
+        <!-- Status Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+            <div class="card">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Bot Status</p>
+                        <p class="text-2xl font-bold text-green-600" id="bot-status">Loading...</p>
+                    </div>
+                    <div class="p-3 bg-green-100 rounded-lg">
+                        <span class="text-2xl">🤖</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Wallets Tracked</p>
+                        <p class="text-2xl font-bold text-blue-600" id="wallets-count">Loading...</p>
+                    </div>
+                    <div class="p-3 bg-blue-100 rounded-lg">
+                        <span class="text-2xl">👁️</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Server Port</p>
+                        <p class="text-2xl font-bold text-purple-600">5000</p>
+                    </div>
+                    <div class="p-3 bg-purple-100 rounded-lg">
+                        <span class="text-2xl">🌐</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bot Controls -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="card">
+                <h3 class="text-lg font-semibold mb-4">Bot Endpoints</h3>
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between p-2 bg-gray-50 rounded">
+                        <span class="text-sm">Health Check:</span>
+                        <a href="http://localhost:5000/health" target="_blank" class="text-blue-600 hover:underline">/health</a>
+                    </div>
+                    <div class="flex items-center justify-between p-2 bg-gray-50 rounded">
+                        <span class="text-sm">Main Page:</span>
+                        <a href="http://localhost:5000/" target="_blank" class="text-blue-600 hover:underline">/</a>
+                    </div>
+                    <div class="flex items-center justify-between p-2 bg-gray-50 rounded">
+                        <span class="text-sm">Webhook:</span>
+                        <span class="text-gray-500">/webhook</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 class="text-lg font-semibold mb-4">Quick Actions</h3>
+                <div class="space-y-3">
+                    <button onclick="testWebhook()" class="w-full bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 transition-colors">
+                        Test Webhook
+                    </button>
+                    <button onclick="refreshStatus()" class="w-full bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700 transition-colors">
+                        Refresh Status
+                    </button>
+                    <button onclick="openBotDocs()" class="w-full bg-purple-600 text-white py-2 px-4 rounded hover:bg-purple-700 transition-colors">
+                        View Bot Docs
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs -->
+        <div class="card">
+            <h3 class="text-lg font-semibold mb-4">Activity Log</h3>
+            <div id="activity-log" class="bg-gray-50 p-4 rounded-lg h-32 overflow-y-auto text-sm font-mono">
+                <div class="text-gray-500">Waiting for activity...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshStatus();
+            setInterval(refreshStatus, 30000); // Refresh every 30 seconds
+        });
+
+        async function refreshStatus() {
+            try {
+                const response = await fetch('http://localhost:5000/health');
+                const data = await response.json();
+                
+                document.getElementById('bot-status').textContent = data.status === 'healthy' ? 'Healthy ✅' : 'Unhealthy ❌';
+                document.getElementById('wallets-count').textContent = data.wallets_tracked || 0;
+                
+                addLogEntry(`Status refreshed: ${data.status}, ${data.wallets_tracked} wallets tracked`);
+            } catch (error) {
+                document.getElementById('bot-status').textContent = 'Error ❌';
+                document.getElementById('wallets-count').textContent = 'Error';
+                addLogEntry(`Error refreshing status: ${error.message}`);
+            }
+        }
+
+        async function testWebhook() {
+            try {
+                const response = await fetch('http://localhost:5000/webhook', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        test: true,
+                        message: 'Test webhook from dashboard',
+                        timestamp: new Date().toISOString()
+                    })
+                });
+                
+                const data = await response.json();
+                addLogEntry(`Webhook test: ${response.status} - ${JSON.stringify(data)}`);
+            } catch (error) {
+                addLogEntry(`Webhook test error: ${error.message}`);
+            }
+        }
+
+        function openBotDocs() {
+            window.open('https://github.com/FIFTHMAGE/TRADESEER', '_blank');
+        }
+
+        function addLogEntry(message) {
+            const log = document.getElementById('activity-log');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'text-gray-700 mb-1';
+            entry.textContent = `[${timestamp}] ${message}`;
+            
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+            
+            // Keep only last 20 entries
+            while (log.children.length > 20) {
+                log.removeChild(log.firstChild);
+            }
+        }
+    </script>
+</body>
+</html>
