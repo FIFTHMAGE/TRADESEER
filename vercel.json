@@ -17,10 +17,5 @@
     "NEXT_PUBLIC_APP_NAME": "TradeSeer",
     "NEXT_PUBLIC_APP_DESCRIPTION": "AI-Powered Trading Bot with Web3 Integration",
     "NEXT_PUBLIC_APP_URL": "https://tradeseer.vercel.app"
-  },
-  "functions": {
-    "app/**/*.tsx": {
-      "maxDuration": 30
-    }
   }
 }
