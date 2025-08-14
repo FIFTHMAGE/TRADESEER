@@ -59,25 +59,39 @@ export default function WalletConnection() {
       setIsConnecting(true);
       setError('');
       
+      console.log('🔌 Attempting to connect wallet...');
+      
       // Open Reown AppKit modal for wallet connection
       await openModal();
       
+      console.log('✅ Modal opened successfully, waiting for user interaction...');
+      
       // The connection status will be updated through the AppKit provider
+      // We'll show a success message after a short delay if connection is successful
+      setTimeout(() => {
+        if (isConnected && connectedAddress) {
+          setSuccess('Wallet connected successfully!');
+          setTimeout(() => setSuccess(''), 3000);
+        }
+      }, 2000);
       
     } catch (error) {
-      console.error('Error connecting wallet:', error);
-      setError('Failed to connect wallet. Please try again.');
+      console.error('❌ Error connecting wallet:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet';
+      setError(`Connection failed: ${errorMessage}. Please try again.`);
       setIsConnecting(false);
     }
   };
 
   const handleNetworkSwitch = async () => {
     try {
+      console.log('🌐 Opening network selection modal...');
       // Open network selection modal
       await openModal();
+      console.log('✅ Network selection modal opened');
     } catch (error) {
-      console.error('Error switching network:', error);
-      setError('Failed to open network selection');
+      console.error('❌ Error switching network:', error);
+      setError('Failed to open network selection. Please try again.');
     }
   };
 
@@ -86,15 +100,19 @@ export default function WalletConnection() {
       setIsDisconnecting(true);
       setError('');
       
+      console.log('🔌 Disconnecting wallet...');
+      
       // Disconnect through the AppKit provider
       await disconnect();
+      
+      console.log('✅ Wallet disconnected successfully');
       
       // Clear any success message and show disconnect confirmation
       setSuccess('Wallet disconnected successfully');
       setTimeout(() => setSuccess(''), 3000);
       
     } catch (error) {
-      console.error('Error disconnecting wallet:', error);
+      console.error('❌ Error disconnecting wallet:', error);
       setError('Failed to disconnect wallet. Please try refreshing the page.');
       setIsDisconnecting(false);
     }

@@ -1585,24 +1585,58 @@ def get_user_wallets(chat_id):
         print(f"Error getting user wallets: {e}")
         return []
 
-def get_wallet_balance(wallet_address, chain="base"):
-    """Get wallet balance on specified chain"""
-    if not WEB3_AVAILABLE:
-        return None
-    
+def get_wallet_balance(wallet_address):
+    """Get wallet balance with improved error handling"""
     try:
-        if chain == "base":
-            w3 = Web3(Web3.HTTPProvider('https://mainnet.base.org'))
-        elif chain == "ethereum":
-            w3 = Web3(Web3.HTTPProvider('https://eth.llamarpc.com'))
-        else:
+        # Validate address format first
+        if not wallet_address or not isinstance(wallet_address, str):
+            print(f"❌ Invalid wallet address format: {wallet_address}")
+            return None
+            
+        # Check if it's a valid hex string
+        if not re.match(r'^0x[a-fA-F0-9]{40}$', wallet_address):
+            print(f"❌ Invalid hex format: {wallet_address}")
             return None
         
-        balance_wei = w3.eth.get_balance(wallet_address)
-        balance_eth = w3.from_wei(balance_wei, 'ether')
-        return float(balance_eth)
+        # Try to convert to checksum address
+        try:
+            checksum_address = Web3.to_checksum_address(wallet_address)
+            if checksum_address != wallet_address:
+                print(f"⚠️ Address checksum mismatch, using: {checksum_address}")
+                wallet_address = checksum_address
+        except Exception as e:
+            print(f"❌ Failed to convert address to checksum: {e}")
+            return None
+        
+        # Try multiple RPC endpoints for better reliability
+        rpc_endpoints = [
+            "https://mainnet.base.org",
+            "https://base-mainnet.public.blastapi.io",
+            "https://1rpc.io/base"
+        ]
+        
+        for rpc_url in rpc_endpoints:
+            try:
+                print(f"🔍 Trying RPC endpoint: {rpc_url}")
+                w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 10}))
+                
+                if w3.is_connected():
+                    balance_wei = w3.eth.get_balance(wallet_address)
+                    balance_eth = w3.from_wei(balance_wei, 'ether')
+                    print(f"✅ Balance retrieved from {rpc_url}: {balance_eth} ETH")
+                    return float(balance_eth)
+                else:
+                    print(f"❌ Failed to connect to {rpc_url}")
+                    
+            except Exception as e:
+                print(f"❌ Error with {rpc_url}: {e}")
+                continue
+        
+        print(f"❌ All RPC endpoints failed for {wallet_address}")
+        return None
+        
     except Exception as e:
-        print(f"Error getting balance: {e}")
+        print(f"❌ Unexpected error getting balance for {wallet_address}: {e}")
         return None
 
 def get_erc20_token_balance(wallet_address, token_address, chain="base"):
