@@ -1,0 +1,22 @@
+# TradeSeer Environment Variables for Vercel Deployment
+# Copy these to your Vercel environment variables
+
+# Reown AppKit Configuration
+NEXT_PUBLIC_REOWN_PROJECT_ID=df764ed317f9390856ac428d23191a43
+
+# App Configuration
+NEXT_PUBLIC_APP_NAME=TradeSeer
+NEXT_PUBLIC_APP_DESCRIPTION=AI-Powered Trading Bot with Web3 Integration
+NEXT_PUBLIC_APP_URL=https://tradeseer.vercel.app
+
+# WalletConnect Configuration
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=df764ed317f9390856ac428d23191a43
+
+# OnChainKit Configuration
+NEXT_PUBLIC_ONCHAINKIT_PROJECT_NAME=tradeseer
+NEXT_PUBLIC_ONCHAINKIT_API_KEY=
+
+# App Assets
+NEXT_PUBLIC_APP_HERO_IMAGE=https://avatars.githubusercontent.com/u/179229932
+NEXT_PUBLIC_APP_SPLASH_IMAGE=https://avatars.githubusercontent.com/u/179229932
+NEXT_PUBLIC_APP_SPLASH_BACKGROUND_COLOR=#1e3a8a
