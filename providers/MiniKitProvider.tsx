@@ -39,8 +39,8 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
         const PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || 'df764ed317f9390856ac428d23191a43';
         console.log('🔑 Project ID:', PROJECT_ID);
         
-        // Use the working configuration from reown-config.ts
-        const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
+        // Configure networks for AppKit (with nativeCurrency and rpcUrls)
+        const appKitNetworks: [AppKitNetwork, ...AppKitNetwork[]] = [
           {
             id: 1,
             name: 'Ethereum',
@@ -56,14 +56,18 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
           }
         ];
 
-        console.log('🌐 Networks configured:', networks);
+        // Configure networks for WagmiAdapter (WagmiAdapter expects different format)
+        const wagmiNetworks = [
+          { id: 1, name: 'Ethereum', chainId: 1 }
+        ];
+
+        console.log('🌐 AppKit networks configured:', appKitNetworks);
+        console.log('🌐 Wagmi networks configured:', wagmiNetworks);
 
         // Set up Wagmi adapter with minimal network config
         const wagmiAdapter = new WagmiAdapter({
           projectId: PROJECT_ID,
-          networks: [
-            { id: 1, name: 'Ethereum', chainId: 1 }
-          ]
+          networks: wagmiNetworks
         });
 
         console.log('✅ WagmiAdapter created');
@@ -82,7 +86,7 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
         const appKitModal = createAppKit({
           projectId: PROJECT_ID,
           adapters: [wagmiAdapter],
-          networks,
+          networks: appKitNetworks,
           metadata,
           features: {
             analytics: false // Disable analytics to avoid issues
