@@ -2,6 +2,7 @@
 
 import { createAppKit } from '@reown/appkit';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+import type { AppKitNetwork } from '@reown/appkit-common';
 import { ReactNode, createContext, useContext, useEffect, useState } from 'react';
 
 interface AppKitContextType {
@@ -39,7 +40,7 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
         console.log('🔑 Project ID:', PROJECT_ID);
         
         // Use the working configuration from reown-config.ts
-        const networks = [
+        const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
           {
             id: 1,
             name: 'Ethereum',
@@ -53,7 +54,7 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
               public: { http: ['https://ethereum.publicnode.com'] }
             }
           }
-        ] as const;
+        ];
 
         console.log('🌐 Networks configured:', networks);
 
