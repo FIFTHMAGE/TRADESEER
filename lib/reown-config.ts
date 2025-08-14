@@ -1,5 +1,4 @@
 import { createAppKit } from '@reown/appkit';
-import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 
 // Production Project ID from Reown Dashboard
 const PROJECT_ID = 'df764ed317f9390856ac428d23191a43';
@@ -19,10 +18,25 @@ export const metadata = {
   icons: ['https://avatars.githubusercontent.com/u/179229932']
 };
 
-// Create the modal with minimal configuration
+// Create the modal with working configuration
 export const modal = createAppKit({
   projectId: PROJECT_ID,
   metadata,
+  networks: [
+    {
+      id: 1,
+      name: 'Ethereum',
+      nativeCurrency: {
+        name: 'Ether',
+        symbol: 'ETH',
+        decimals: 18
+      },
+      rpcUrls: {
+        default: { http: ['https://ethereum.publicnode.com'] },
+        public: { http: ['https://ethereum.publicnode.com'] }
+      }
+    }
+  ],
   features: {
     analytics: false // Disable analytics to avoid remote API calls
   }
