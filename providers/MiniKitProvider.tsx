@@ -38,19 +38,31 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
         const PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || 'df764ed317f9390856ac428d23191a43';
         console.log('🔑 Project ID:', PROJECT_ID);
         
-        // Configure networks - use Base as primary
+        // Use the working configuration from reown-config.ts
         const networks = [
-          { id: 8453, name: 'Base', chainId: 8453 }, // Base Mainnet
-          { id: 1, name: 'Ethereum', chainId: 1 },   // Ethereum Mainnet
-          { id: 137, name: 'Polygon', chainId: 137 }  // Polygon
-        ] as [{ id: number; name: string; chainId: number }, ...{ id: number; name: string; chainId: number }[]];
+          {
+            id: 1,
+            name: 'Ethereum',
+            nativeCurrency: {
+              name: 'Ether',
+              symbol: 'ETH',
+              decimals: 18
+            },
+            rpcUrls: {
+              default: { http: ['https://ethereum.publicnode.com'] },
+              public: { http: ['https://ethereum.publicnode.com'] }
+            }
+          }
+        ] as const;
 
         console.log('🌐 Networks configured:', networks);
 
-        // Set up Wagmi adapter
+        // Set up Wagmi adapter with minimal network config
         const wagmiAdapter = new WagmiAdapter({
           projectId: PROJECT_ID,
-          networks
+          networks: [
+            { id: 1, name: 'Ethereum', chainId: 1 }
+          ]
         });
 
         console.log('✅ WagmiAdapter created');
@@ -65,7 +77,7 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
 
         console.log('📝 Metadata configured:', metadata);
 
-        // Create AppKit modal
+        // Create AppKit modal with the same approach as reown-config.ts
         const appKitModal = createAppKit({
           projectId: PROJECT_ID,
           adapters: [wagmiAdapter],
