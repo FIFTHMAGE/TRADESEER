@@ -97,6 +97,11 @@ export function MiniKitContextProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         console.error('❌ Failed to initialize AppKit:', error);
         setIsReady(false);
+        // Set a timeout to retry or proceed anyway
+        setTimeout(() => {
+          console.log('⚠️ AppKit failed, but setting ready to true to prevent app from hanging');
+          setIsReady(true);
+        }, 5000);
       }
     };
 

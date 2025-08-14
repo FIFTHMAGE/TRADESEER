@@ -27,11 +27,19 @@ export default function HomePage() {
     // Simulate app loading and AppKit initialization
     const initializeApp = async () => {
       try {
+        // Wait for AppKit to be ready, but with a timeout
+        const appKitTimeout = setTimeout(() => {
+          console.log('⚠️ AppKit initialization timeout, proceeding anyway...');
+          setIsLoading(false);
+        }, 10000); // 10 second timeout
+        
         // Wait for AppKit to be ready
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Additional app initialization
         await new Promise(resolve => setTimeout(resolve, 500));
+        
+        clearTimeout(appKitTimeout);
         setIsLoading(false);
       } catch (error) {
         console.error('App initialization error:', error);
@@ -59,6 +67,19 @@ export default function HomePage() {
               ✅ AppKit Ready
             </div>
           )}
+          {/* Add timeout warning and manual proceed option */}
+          <div className="mt-4 text-sm text-gray-500">
+            If AppKit takes too long, the app will proceed automatically
+          </div>
+          <button
+            onClick={() => {
+              console.log('🚀 Manual proceed clicked');
+              setIsLoading(false);
+            }}
+            className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+          >
+            Proceed Anyway
+          </button>
         </div>
       </div>
     );
