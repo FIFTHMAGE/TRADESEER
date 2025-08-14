@@ -1,5 +1,6 @@
 import { Metadata } from 'next';
 import './globals.css';
+import { MiniKitContextProvider } from '@/providers/MiniKitProvider';
 
 export async function generateMetadata(): Promise<Metadata> {
   const URL = process.env.NEXT_PUBLIC_URL || 'http://localhost:3000';
@@ -33,7 +34,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-gray-50 font-sans">
-        {children}
+        <MiniKitContextProvider>
+          {children}
+        </MiniKitContextProvider>
       </body>
     </html>
   );

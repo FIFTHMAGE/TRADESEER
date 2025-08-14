@@ -17,6 +17,7 @@ export default function WalletTracker() {
   const [newWalletAddress, setNewWalletAddress] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string>('');
+  const [success, setSuccess] = useState<string>('');
 
   useEffect(() => {
     console.log('WalletTracker: Component mounted, loading wallets...');
@@ -92,6 +93,9 @@ export default function WalletTracker() {
     if (newWalletAddress.trim()) {
       try {
         console.log('WalletTracker: Adding new wallet:', newWalletAddress);
+        setError(''); // Clear any previous errors
+        setIsAddingWallet(false); // Close the modal while processing
+        
         // Use the API to track the new wallet
         const success = await api.trackWallet(newWalletAddress.trim());
         
@@ -112,17 +116,23 @@ export default function WalletTracker() {
           };
           setWallets([...wallets, newWallet]);
           setNewWalletAddress('');
-          setIsAddingWallet(false);
           
-          // Reload wallets to get updated data
+          // Show success message
+          setSuccess('Wallet added successfully!');
+          setTimeout(() => setSuccess(''), 3000);
+          
+          // Reload wallets to get updated data from server
           setTimeout(loadTrackedWallets, 1000);
         } else {
-          console.log('WalletTracker: Failed to add wallet');
-          setError('Failed to add wallet. Please try again.');
+          console.log('WalletTracker: Failed to add wallet - API returned false');
+          setError('Failed to add wallet. The server could not process the request.');
+          setIsAddingWallet(true); // Reopen modal on error
         }
       } catch (err) {
         console.error('WalletTracker: Error adding wallet:', err);
-        setError('Failed to add wallet. Please try again.');
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
+        setError(`Failed to add wallet: ${errorMessage}`);
+        setIsAddingWallet(true); // Reopen modal on error
       }
     }
   };
@@ -209,6 +219,22 @@ export default function WalletTracker() {
             <button 
               onClick={() => setError('')} 
               className="text-red-600 hover:text-red-800"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Success Message */}
+      {success && (
+        <div className="card bg-green-50 border-green-200">
+          <div className="flex items-center space-x-3">
+            <CheckCircle className="w-6 h-6 text-green-600" />
+            <p className="text-green-700">{success}</p>
+            <button 
+              onClick={() => setSuccess('')} 
+              className="text-green-600 hover:text-green-800"
             >
               ×
             </button>

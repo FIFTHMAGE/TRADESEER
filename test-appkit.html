@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AppKit Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+            font-size: 16px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        .console {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 20px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔑 AppKit Configuration Test</h1>
+        <p>Testing Reown AppKit configuration with Project ID: <strong>df764ed317f9390856ac428d23191a43</strong></p>
+        
+        <div id="status" class="status info">
+            Initializing AppKit...
+        </div>
+        
+        <div>
+            <button id="testConnect" onclick="testConnect()" disabled>Test Connect</button>
+            <button id="testDisconnect" onclick="testDisconnect()" disabled>Test Disconnect</button>
+            <button id="testNetworks" onclick="testNetworks()" disabled>Test Networks</button>
+        </div>
+        
+        <h3>Console Output:</h3>
+        <div id="console" class="console"></div>
+        
+        <h3>Configuration Status:</h3>
+        <div id="configStatus"></div>
+    </div>
+
+    <script type="module">
+        import { createAppKit } from 'https://esm.sh/@reown/appkit@1.7.19';
+        import { WagmiAdapter } from 'https://esm.sh/@reown/appkit-adapter-wagmi@1.7.19';
+
+        let modal;
+        let statusDiv = document.getElementById('status');
+        let consoleDiv = document.getElementById('console');
+        let configStatusDiv = document.getElementById('configStatus');
+        let testConnectBtn = document.getElementById('testConnect');
+        let testDisconnectBtn = document.getElementById('testDisconnect');
+        let testNetworksBtn = document.getElementById('testNetworks');
+
+        function log(message) {
+            consoleDiv.textContent += message + '\n';
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        function updateStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        async function initializeAppKit() {
+            try {
+                log('🚀 Initializing AppKit...');
+                
+                const PROJECT_ID = 'df764ed317f9390856ac428d23191a43';
+                log(`🔑 Project ID: ${PROJECT_ID}`);
+                
+                // Check if project ID is valid
+                if (!PROJECT_ID) {
+                    throw new Error('Project ID not configured');
+                }
+                
+                // Basic network configuration
+                const defaultNetworks = [{ id: 1, name: 'Ethereum' }];
+                log(`🌐 Networks: ${JSON.stringify(defaultNetworks)}`);
+                
+                // Set up Wagmi adapter
+                const wagmiAdapter = new WagmiAdapter({
+                    projectId: PROJECT_ID,
+                    networks: defaultNetworks
+                });
+                log('✅ WagmiAdapter created successfully');
+                
+                // Configure metadata
+                const metadata = {
+                    name: 'TradeSeer Test',
+                    description: 'AI-Powered Trading Bot with Web3 Integration',
+                    url: window.location.origin,
+                    icons: ['https://avatars.githubusercontent.com/u/179229932']
+                };
+                log(`📝 Metadata: ${JSON.stringify(metadata)}`);
+                
+                // Create AppKit modal
+                modal = createAppKit({
+                    adapters: [wagmiAdapter],
+                    networks: defaultNetworks,
+                    metadata,
+                    features: {
+                        analytics: true
+                    }
+                });
+                log('✅ AppKit modal created successfully');
+                
+                // Test modal methods
+                log('🧪 Testing modal methods...');
+                log(`Modal open method: ${typeof modal.open}`);
+                log(`Modal disconnect method: ${typeof modal.disconnect}`);
+                log(`Modal subscribeConnections method: ${typeof modal.subscribeConnections}`);
+                
+                // Enable test buttons
+                testConnectBtn.disabled = false;
+                testDisconnectBtn.disabled = false;
+                testNetworksBtn.disabled = false;
+                
+                updateStatus('✅ AppKit initialized successfully!', 'success');
+                log('🎉 AppKit initialization complete!');
+                
+                // Display configuration status
+                configStatusDiv.innerHTML = `
+                    <div class="status success">
+                        <strong>✅ Configuration Successful</strong><br>
+                        Project ID: ${PROJECT_ID}<br>
+                        Networks: ${defaultNetworks.length} configured<br>
+                        Adapters: 1 loaded<br>
+                        Modal: Ready
+                    </div>
+                `;
+                
+            } catch (error) {
+                log(`❌ Error initializing AppKit: ${error.message}`);
+                log(`Stack trace: ${error.stack}`);
+                updateStatus(`❌ AppKit initialization failed: ${error.message}`, 'error');
+                
+                configStatusDiv.innerHTML = `
+                    <div class="status error">
+                        <strong>❌ Configuration Failed</strong><br>
+                        Error: ${error.message}<br>
+                        Check console for details
+                    </div>
+                `;
+            }
+        }
+
+        // Global functions for buttons
+        window.testConnect = async function() {
+            if (!modal) {
+                log('❌ Modal not initialized');
+                return;
+            }
+            
+            try {
+                log('🔌 Testing wallet connection...');
+                await modal.open();
+                log('✅ Connect modal opened successfully');
+            } catch (error) {
+                log(`❌ Connect test failed: ${error.message}`);
+            }
+        };
+
+        window.testDisconnect = async function() {
+            if (!modal) {
+                log('❌ Modal not initialized');
+                return;
+            }
+            
+            try {
+                log('🔌 Testing wallet disconnection...');
+                await modal.disconnect();
+                log('✅ Disconnect successful');
+            } catch (error) {
+                log(`❌ Disconnect test failed: ${error.message}`);
+            }
+        };
+
+        window.testNetworks = async function() {
+            if (!modal) {
+                log('❌ Modal not initialized');
+                return;
+            }
+            
+            try {
+                log('🌐 Testing network selection...');
+                await modal.open({ view: 'Networks' });
+                log('✅ Networks modal opened successfully');
+            } catch (error) {
+                log(`❌ Networks test failed: ${error.message}`);
+            }
+        };
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', initializeAppKit);
+    </script>
+</body>
+</html>
+

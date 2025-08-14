@@ -1,16 +1,202 @@
 'use client';
 
-import { MiniKitProvider } from '@coinbase/onchainkit/minikit';
-import { ReactNode } from 'react';
-import { base } from 'wagmi/chains';
+import { createAppKit } from '@reown/appkit';
+import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
+import { ReactNode, createContext, useContext, useEffect, useState } from 'react';
+// Import chains dynamically to avoid TypeScript issues
+const { base, mainnet } = require('wagmi/chains');
+
+interface AppKitContextType {
+  modal: any;
+  isReady: boolean;
+  isConnected: boolean;
+  connectedAddress: string | null;
+  openModal: () => Promise<void>;
+  disconnect: () => Promise<void>;
+  refreshConnection: () => void;
+}
+
+const AppKitContext = createContext<AppKitContextType | null>(null);
+
+export function useAppKit() {
+  const context = useContext(AppKitContext);
+  if (!context) {
+    throw new Error('useAppKit must be used within AppKitProvider');
+  }
+  return context;
+}
 
 export function MiniKitContextProvider({ children }: { children: ReactNode }) {
+  const [modal, setModal] = useState<any>(null);
+  const [isReady, setIsReady] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initializeAppKit = async () => {
+      try {
+        const PROJECT_ID = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID || 'df764ed317f9390856ac428d23191a43';
+        
+        // Configure networks
+        const networks = [
+          { id: base.id, name: base.name, chainId: base.id }
+        ] as [{ id: number; name: string; chainId: number }, ...{ id: number; name: string; chainId: number }[]];
+
+        // Set up Wagmi adapter
+        const wagmiAdapter = new WagmiAdapter({
+          projectId: PROJECT_ID,
+          networks
+        });
+
+        // Configure metadata
+        const metadata = {
+          name: process.env.NEXT_PUBLIC_APP_NAME || 'TradeSeer',
+          description: process.env.NEXT_PUBLIC_APP_DESCRIPTION || 'AI-Powered Trading Bot with Web3 Integration',
+          url: process.env.NEXT_PUBLIC_APP_URL || window.location.origin,
+          icons: [process.env.NEXT_PUBLIC_APP_HERO_IMAGE || 'https://avatars.githubusercontent.com/u/179229932']
+        };
+
+        // Create AppKit modal
+        const appKitModal = createAppKit({
+          projectId: PROJECT_ID,
+          adapters: [wagmiAdapter],
+          networks,
+          metadata,
+          features: {
+            analytics: true
+          }
+        });
+
+        setModal(appKitModal);
+        setIsReady(true);
+
+        // Set up connection listeners
+        setupConnectionListeners(appKitModal);
+
+      } catch (error) {
+        console.error('Failed to initialize AppKit:', error);
+        setIsReady(false);
+      }
+    };
+
+    initializeAppKit();
+  }, []);
+
+  const setupConnectionListeners = (appKitModal: any) => {
+    if (!appKitModal) return;
+
+    try {
+      // Subscribe to connection changes
+      const unsubscribeConnections = appKitModal.subscribeConnections((connectionState: any) => {
+        console.log('AppKit: Connection state updated:', connectionState);
+        
+        // Check if we have any active connections
+        const activeConnections = connectionState.connections;
+        if (activeConnections && activeConnections.size > 0) {
+          // Get the first connected address from the Map
+          const firstNamespace = Array.from(activeConnections.keys())[0];
+          const connections = activeConnections.get(firstNamespace);
+          
+          if (connections && connections.length > 0) {
+            const address = connections[0].accounts?.[0]?.address;
+            if (address) {
+              console.log('AppKit: Wallet connected:', address);
+              setConnectedAddress(address);
+              setIsConnected(true);
+            }
+          }
+        } else {
+          // No connections, wallet disconnected
+          console.log('AppKit: Wallet disconnected');
+          setConnectedAddress(null);
+          setIsConnected(false);
+        }
+      });
+
+      // Cleanup subscription on unmount
+      return () => {
+        if (unsubscribeConnections) {
+          unsubscribeConnections();
+        }
+      };
+
+    } catch (error) {
+      console.error('Error setting up AppKit connection listeners:', error);
+    }
+  };
+
+  const openModal = async () => {
+    if (modal) {
+      try {
+        await modal.open();
+      } catch (error) {
+        console.error('Failed to open AppKit modal:', error);
+      }
+    }
+  };
+
+  const disconnect = async () => {
+    if (modal) {
+      try {
+        console.log('AppKit: Disconnecting wallet...');
+        
+        // Try to disconnect through the modal first
+        if (typeof modal.disconnect === 'function') {
+          await modal.disconnect();
+        } else {
+          console.log('AppKit: Modal disconnect method not available, using alternative approach');
+          // Alternative: try to close the modal and reset state
+          if (typeof modal.close === 'function') {
+            await modal.close();
+          }
+        }
+        
+        // Force update local state regardless of modal response
+        setConnectedAddress(null);
+        setIsConnected(false);
+        
+        console.log('AppKit: Wallet disconnected successfully');
+      } catch (error) {
+        console.error('Failed to disconnect wallet:', error);
+        // Even if the modal disconnect fails, update local state
+        setConnectedAddress(null);
+        setIsConnected(false);
+      }
+    } else {
+      // If no modal, just reset the state
+      console.log('AppKit: No modal available, resetting connection state');
+      setConnectedAddress(null);
+      setIsConnected(false);
+    }
+  };
+
+  const refreshConnection = () => {
+    // Force a refresh of the connection state
+    if (modal) {
+      try {
+        // This will trigger the connection listeners
+        modal.subscribeConnections((connectionState: any) => {
+          console.log('AppKit: Refreshing connection state:', connectionState);
+        });
+      } catch (error) {
+        console.error('Failed to refresh connection:', error);
+      }
+    }
+  };
+
+  const value: AppKitContextType = {
+    modal,
+    isReady,
+    isConnected,
+    connectedAddress,
+    openModal,
+    disconnect,
+    refreshConnection
+  };
+
   return (
-    <MiniKitProvider
-      apiKey={process.env.NEXT_PUBLIC_CDP_CLIENT_API_KEY}
-      chain={base}
-    >
+    <AppKitContext.Provider value={value}>
       {children}
-    </MiniKitProvider>
+    </AppKitContext.Provider>
   );
 }

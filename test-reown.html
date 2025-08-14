@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Reown AppKit Test</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 20px; }
+      button { padding: 10px 20px; margin: 10px; border: none; border-radius: 5px; cursor: pointer; }
+      .connect { background: linear-gradient(45deg, #3b82f6, #8b5cf6); color: white; }
+      .network { background: #f3f4f6; color: #374151; }
+    </style>
+  </head>
+  <body>
+    <h1>Reown AppKit Test</h1>
+    <p>Testing Reown AppKit integration for TradeSeer</p>
+    
+    <div>
+      <button id="open-connect-modal" class="connect">Connect Wallet</button>
+      <button id="open-network-modal" class="network">Switch Network</button>
+    </div>
+    
+    <div>
+      <appkit-button />
+      <appkit-network-button />
+    </div>
+    
+    <script type="module">
+      // This will be replaced with the actual Reown AppKit configuration
+      console.log('Reown AppKit test page loaded');
+      
+      // Test buttons
+      document.getElementById('open-connect-modal').addEventListener('click', () => {
+        console.log('Connect button clicked');
+        alert('Connect button clicked - Reown AppKit would open here');
+      });
+      
+      document.getElementById('open-network-modal').addEventListener('click', () => {
+        console.log('Network button clicked');
+        alert('Network button clicked - Network selection would open here');
+      });
+    </script>
+  </body>
+</html>

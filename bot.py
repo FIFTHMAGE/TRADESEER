@@ -15,6 +15,7 @@ import secrets
 import hashlib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 import logging
 from collections import defaultdict
@@ -122,10 +123,13 @@ ALTERNATIVE_ONRAMPPS = {
 }
 
 # Validate environment variables
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
 if not ETHERSCAN_API_KEY:
     raise ValueError("ETHERSCAN_API_KEY not found in environment variables")
+
+# Make Telegram token optional for development
+if not TELEGRAM_BOT_TOKEN:
+    print("⚠️ TELEGRAM_BOT_TOKEN not found - Telegram bot features will be disabled")
+    TELEGRAM_BOT_TOKEN = None
 
 # FunBonk availability check
 FONBNK_AVAILABLE = bool(FONBNK_MERCHANT_SOURCE) and JWT_AVAILABLE
@@ -950,6 +954,7 @@ def get_cross_chain_activity(wallet_address):
 
 # Flask app
 app = Flask(__name__)
+CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'])
 logging.basicConfig(level=logging.INFO)
 
 class TelegramBot:
@@ -959,16 +964,29 @@ class TelegramBot:
     
     def send_message(self, chat_id, text, parse_mode='HTML', reply_markup=None):
         """Send a message to a Telegram chat"""
-        url = f"{self.base_url}/sendMessage"
-        payload = {
-            'chat_id': chat_id,
-            'text': text,
-            'parse_mode': parse_mode
-        }
-        if reply_markup:
-            payload['reply_markup'] = reply_markup
-        response = requests.post(url, json=payload)
-        return response.json()
+        try:
+            url = f"{self.base_url}/sendMessage"
+            payload = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': parse_mode
+            }
+            if reply_markup:
+                payload['reply_markup'] = reply_markup
+            
+            print(f"📤 Sending message to chat {chat_id}: {text[:100]}...")
+            response = requests.post(url, json=payload)
+            result = response.json()
+            
+            if not result.get('ok'):
+                print(f"❌ Failed to send message: {result}")
+            else:
+                print(f"✅ Message sent successfully to chat {chat_id}")
+            
+            return result
+        except Exception as e:
+            print(f"❌ Error sending message to chat {chat_id}: {e}")
+            return {'ok': False, 'error': str(e)}
     
     def set_webhook(self, webhook_url):
         """Set the webhook URL"""
@@ -984,7 +1002,13 @@ class TelegramBot:
         response = requests.post(url, json=payload)
         return response.json()
 
-bot = TelegramBot(TELEGRAM_BOT_TOKEN)
+# Initialize Telegram bot (only if token is available)
+if TELEGRAM_BOT_TOKEN:
+    bot = TelegramBot(TELEGRAM_BOT_TOKEN)
+    print("✅ Telegram bot initialized")
+else:
+    print("⚠️ Telegram bot disabled - no token provided")
+    bot = None
 
 def create_inline_keyboard(buttons):
     """Create inline keyboard markup"""
@@ -4861,11 +4885,17 @@ def webhook():
             elif text.startswith('/positions') or text.startswith('/pos'):
                 handle_positions(chat_id)
             elif text.startswith('/buy_usdc') or text.startswith('/buyusdc'):
+                print(f"🛒 Processing /buy_usdc command for chat {chat_id}")
                 parts = text.split(' ', 1)
                 amount_str = parts[1] if len(parts) > 1 else None
+                print(f"💰 Amount specified: {amount_str}")
                 response = handle_buy_usdc(chat_id, amount_str)
+                print(f"📝 Response generated: {response[:100] if response else 'None'}...")
                 if response:
+                    print(f"📤 Sending response to chat {chat_id}")
                     bot.send_message(chat_id, response, parse_mode='Markdown')
+                else:
+                    print(f"⚠️ No response generated for chat {chat_id}")
             elif text.startswith('/basename') or text.startswith('/identity'):
                 parts = text.split(' ', 1)
                 basename_input = parts[1] if len(parts) > 1 else None
@@ -5155,6 +5185,49 @@ def send_fonbnk_notification(chat_id, order_id, status, order_data):
 def health():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'wallets_tracked': len(user_wallets)})
+
+@app.route('/wallets', methods=['GET'])
+def get_wallets():
+    """Get tracked wallets endpoint"""
+    try:
+        # Get all tracked wallets from the database
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT DISTINCT wallet_address, chat_id 
+            FROM tracked_wallets 
+            ORDER BY chat_id, wallet_address
+        ''')
+        wallet_rows = cursor.fetchall()
+        
+        wallets = []
+        for row in wallet_rows:
+            wallet_address, chat_id = row
+            
+            # Get wallet balance and score
+            balance = get_wallet_balance(wallet_address)
+            score = get_wallet_score(wallet_address)
+            
+            wallets.append({
+                'address': wallet_address,
+                'name': f'Wallet {wallet_address[:6]}...{wallet_address[-4:]}',
+                'balance': balance if balance else 0,
+                'score': score if score else 0,
+                'lastActivity': '24h ago',  # Placeholder
+                'chain': 'Base'
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            'status': 'success',
+            'wallets': wallets,
+            'total': len(wallets)
+        })
+        
+    except Exception as e:
+        print(f"Error getting wallets: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/', methods=['GET'])
 def home():

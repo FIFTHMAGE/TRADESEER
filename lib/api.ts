@@ -37,6 +37,13 @@ export interface PurchaseOrder {
   createdAt: string;
 }
 
+export interface ConnectedWallet {
+  address: string;
+  name: string;
+  isConnected: boolean;
+  balance?: number;
+}
+
 class TradeSeerAPI {
   private baseURL: string;
 
@@ -95,25 +102,43 @@ class TradeSeerAPI {
   // Get tracked wallets
   async getTrackedWallets(): Promise<WalletData[]> {
     try {
-      const health = await this.getHealth();
-      const walletCount = health.wallets_tracked || 0;
+      console.log('API: Fetching tracked wallets from:', `${this.baseURL}/wallets`);
       
-      // Generate sample wallet data
-      const wallets: WalletData[] = [];
-      for (let i = 0; i < walletCount; i++) {
-        wallets.push({
-          address: `0x${Math.random().toString(16).substr(2, 8)}...${Math.random().toString(16).substr(2, 4)}`,
-          name: `Wallet ${i + 1}`,
-          balance: Math.random() * 10 + 0.1, // 0.1 - 10 ETH
-          score: Math.floor(Math.random() * 40) + 60, // 60-100
-          lastActivity: `${Math.floor(Math.random() * 24)}h ago`,
-          chain: 'Base'
-        });
+      const response = await fetch(`${this.baseURL}/wallets`);
+      console.log('API: Wallets response status:', response.status);
+      console.log('API: Wallets response ok:', response.ok);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API: Failed to fetch wallets, status:', response.status, 'error:', errorText);
+        throw new Error(`Failed to fetch wallets: HTTP ${response.status}`);
       }
       
-      return wallets;
+      const data = await response.json();
+      console.log('API: Wallets response data:', data);
+      
+      if (data.status === 'success' && data.wallets) {
+        const wallets = data.wallets.map((wallet: any) => ({
+          address: wallet.address,
+          name: wallet.name || `Wallet ${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`,
+          balance: wallet.balance || 0,
+          score: wallet.score || 0,
+          lastActivity: wallet.lastActivity || '24h ago',
+          chain: wallet.chain || 'Base'
+        }));
+        console.log('API: Processed wallets:', wallets);
+        return wallets;
+      }
+      
+      console.log('API: No wallets found or invalid response format');
+      return [];
     } catch (error) {
-      console.error('Failed to get tracked wallets:', error);
+      console.error('API: Failed to get tracked wallets:', error);
+      console.error('API: Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        name: error instanceof Error ? error.name : 'Unknown error type'
+      });
       return [];
     }
   }
@@ -157,6 +182,9 @@ class TradeSeerAPI {
   // Create USDC purchase order
   async createUSDCOrder(amount: number, walletAddress: string): Promise<PurchaseOrder> {
     try {
+      // Create a unique chat ID for this purchase
+      const chatId = Date.now();
+      
       const response = await fetch(`${this.baseURL}/webhook`, {
         method: 'POST',
         headers: {
@@ -165,16 +193,21 @@ class TradeSeerAPI {
         body: JSON.stringify({
           message: {
             text: `/buy_usdc ${amount}`,
-            chat: { id: Date.now() },
-            from: { id: Date.now(), username: 'web_user' }
+            chat: { id: chatId },
+            from: { id: chatId, username: 'web_user' }
           }
         })
       });
 
-      if (!response.ok) throw new Error('Failed to create order');
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('USDC order creation failed:', errorText);
+        throw new Error(`Failed to create order: ${errorText}`);
+      }
 
+      // Create the order record
       const order: PurchaseOrder = {
-        id: Date.now().toString(),
+        id: chatId.toString(),
         amount,
         status: 'pending',
         walletAddress,
@@ -191,23 +224,56 @@ class TradeSeerAPI {
   // Track new wallet
   async trackWallet(address: string): Promise<boolean> {
     try {
+      console.log('API: Attempting to track wallet:', address);
+      console.log('API: Base URL:', this.baseURL);
+      
+      const payload = {
+        message: {
+          text: `/track ${address}`,
+          chat: { id: Date.now() },
+          from: { id: Date.now(), username: 'web_user' }
+        }
+      };
+      
+      console.log('API: Request payload:', payload);
+      
       const response = await fetch(`${this.baseURL}/webhook`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          message: {
-            text: `/track ${address}`,
-            chat: { id: Date.now() },
-            from: { id: Date.now(), username: 'web_user' }
-          }
-        })
+        body: JSON.stringify(payload)
       });
 
-      return response.ok;
+      console.log('API: Response status:', response.status);
+      console.log('API: Response ok:', response.ok);
+      console.log('API: Response headers:', Object.fromEntries(response.headers.entries()));
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('API: Response not ok, error text:', errorText);
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const responseData = await response.text();
+      console.log('API: Response data:', responseData);
+      
+      // Check if the response indicates success
+      if (responseData.includes('"status":"ok"') || responseData.includes('"status":"success"')) {
+        console.log('API: Wallet tracking successful');
+        return true;
+      } else {
+        console.log('API: Wallet tracking response indicates failure');
+        return false;
+      }
+      
     } catch (error) {
-      console.error('Failed to track wallet:', error);
+      console.error('API: Failed to track wallet:', error);
+      console.error('API: Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : 'No stack trace',
+        name: error instanceof Error ? error.name : 'Unknown error type'
+      });
       return false;
     }
   }
@@ -234,6 +300,22 @@ class TradeSeerAPI {
     } catch (error) {
       console.error('Failed to get wallet insights:', error);
       throw error;
+    }
+  }
+
+  // Get user's connected wallets for USDC purchase
+  async getConnectedWallets(): Promise<ConnectedWallet[]> {
+    try {
+      const trackedWallets = await this.getTrackedWallets();
+      return trackedWallets.map(wallet => ({
+        address: wallet.address,
+        name: wallet.name || `Wallet ${wallet.address.slice(0, 6)}...`,
+        isConnected: true,
+        balance: wallet.balance
+      }));
+    } catch (error) {
+      console.error('Failed to get connected wallets:', error);
+      return [];
     }
   }
 }

@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-// import { useMiniKit } from '@coinbase/onchainkit/minikit';
-import { Wallet, TrendingUp, Eye, Settings, BarChart3, Search, Plus, Activity, DollarSign } from 'lucide-react';
+import { Wallet, TrendingUp, Eye, Settings, BarChart3, Search, Plus, Activity, DollarSign, Link } from 'lucide-react';
 import Dashboard from '@/components/Dashboard';
 import WalletTracker from '@/components/WalletTracker';
 import TestWalletTracker from '@/components/TestWalletTracker';
@@ -13,21 +12,34 @@ import TokenDiscovery from '@/components/TokenDiscovery';
 import SettingsPanel from '@/components/SettingsPanel';
 import Portfolio from '@/components/Portfolio';
 import USDCPurchase from '@/components/USDCPurchase';
+import WalletConnection from '@/components/WalletConnection';
+import { useAppKit } from '@/providers/MiniKitProvider';
 
-type TabType = 'dashboard' | 'tracker' | 'discovery' | 'portfolio' | 'usdc' | 'settings';
+type TabType = 'dashboard' | 'tracker' | 'discovery' | 'portfolio' | 'wallets' | 'usdc' | 'settings';
 
 export default function HomePage() {
-  // const { setFrameReady, isFrameReady, context } = useMiniKit();
+  const { isReady, isConnected, connectedAddress } = useAppKit();
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initialize MiniKit when the app is ready
+  // Initialize AppKit when the app is ready
   useEffect(() => {
-    // Simulate app loading
-    setTimeout(() => {
-      setIsLoading(false);
-      // setFrameReady();
-    }, 1500);
+    // Simulate app loading and AppKit initialization
+    const initializeApp = async () => {
+      try {
+        // Wait for AppKit to be ready
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Additional app initialization
+        await new Promise(resolve => setTimeout(resolve, 500));
+        setIsLoading(false);
+      } catch (error) {
+        console.error('App initialization error:', error);
+        setIsLoading(false);
+      }
+    };
+
+    initializeApp();
   }, []);
 
   // Show loading screen while initializing
@@ -39,7 +51,14 @@ export default function HomePage() {
             <Eye className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-gradient mb-2">TradeSeer</h1>
-          <p className="text-secondary-600">Loading your trading insights...</p>
+          <p className="text-secondary-600">
+            {isReady ? 'Initializing trading features...' : 'Loading AppKit...'}
+          </p>
+          {isReady && (
+            <div className="mt-4 text-sm text-green-600">
+              ✅ AppKit Ready
+            </div>
+          )}
         </div>
       </div>
     );
@@ -52,14 +71,17 @@ export default function HomePage() {
         console.log('HomePage: Rendering Dashboard');
         return <Dashboard />;
       case 'tracker':
-        console.log('HomePage: Rendering ErrorBoundaryWalletTracker');
-        return <ErrorBoundaryWalletTracker />;
+        console.log('HomePage: Rendering WalletTracker');
+        return <WalletTracker />;
       case 'discovery':
         console.log('HomePage: Rendering TokenDiscovery');
         return <TokenDiscovery />;
       case 'portfolio':
         console.log('HomePage: Rendering Portfolio');
         return <Portfolio />;
+      case 'wallets':
+        console.log('HomePage: Rendering WalletConnection component');
+        return <WalletConnection />;
       case 'usdc':
         console.log('HomePage: Rendering USDCPurchase');
         return <USDCPurchase />;
@@ -86,10 +108,21 @@ export default function HomePage() {
             </div>
             
             <div className="flex items-center space-x-2 text-sm text-secondary-600">
-              <span>Demo Mode</span>
-              <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs">
-                Active
+              <span>AppKit Status</span>
+              <span className={`px-2 py-1 rounded-full text-xs ${
+                isConnected 
+                  ? 'bg-green-100 text-green-800' 
+                  : isReady 
+                    ? 'bg-yellow-100 text-yellow-800'
+                    : 'bg-red-100 text-red-800'
+              }`}>
+                {isConnected ? 'Connected' : isReady ? 'Ready' : 'Initializing'}
               </span>
+              {isConnected && connectedAddress && (
+                <span className="text-xs text-gray-500 font-mono">
+                  {connectedAddress.slice(0, 6)}...{connectedAddress.slice(-4)}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -104,6 +137,7 @@ export default function HomePage() {
               { id: 'tracker', label: 'Wallet Tracker', icon: Eye },
               { id: 'discovery', label: 'Token Discovery', icon: Search },
               { id: 'portfolio', label: 'Portfolio', icon: Wallet },
+              { id: 'wallets', label: 'Connect Wallets', icon: Link },
               { id: 'usdc', label: 'Buy USDC', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
             ].map((tab) => {

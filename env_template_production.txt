@@ -1,0 +1,28 @@
+# TradeSeer Mini App Production Environment Variables
+# Copy this file to .env.local and fill in your actual values
+
+# Reown AppKit Configuration (Required)
+NEXT_PUBLIC_REOWN_PROJECT_ID=df764ed317f9390856ac428d23191a43
+
+# App Configuration
+NEXT_PUBLIC_APP_NAME=TradeSeer
+NEXT_PUBLIC_APP_DESCRIPTION=AI-Powered Trading Bot with Web3 Integration
+NEXT_PUBLIC_APP_URL=https://tradeseer-miniapp.vercel.app
+
+# App Assets (Optional - will use defaults if not set)
+NEXT_PUBLIC_APP_HERO_IMAGE=https://avatars.githubusercontent.com/u/179229932
+NEXT_PUBLIC_SPLASH_IMAGE=https://avatars.githubusercontent.com/u/179229932
+NEXT_PUBLIC_SPLASH_BACKGROUND_COLOR=#1e3a8a
+
+# API Keys (Optional - for enhanced functionality)
+NEXT_PUBLIC_ETHERSCAN_API_KEY=
+
+# Database Configuration (Optional - for persistent storage)
+DATABASE_URL=
+
+# Webhook Configuration (Optional)
+WEBHOOK_SECRET=
+
+# Production Settings
+NODE_ENV=production
+NEXT_PUBLIC_APP_ENV=production
