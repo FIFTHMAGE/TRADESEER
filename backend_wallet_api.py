@@ -14,7 +14,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @app.route('/api/wallets', methods=['GET'])
 def get_wallets():
-    res = supabase.table('wallets').select('*').execute()
+    res = supabase.table('tracked_wallets').select('*').execute()
     if res.status_code == 200:
         return jsonify(res.data)
     return jsonify([]), 500
@@ -26,12 +26,12 @@ def add_wallet():
     chain = data.get('chain', 'Base')
     if not address:
         return jsonify({'success': False, 'error': 'Missing address'}), 400
-    res = supabase.table('wallets').insert({'address': address, 'chain': chain}).execute()
+    res = supabase.table('tracked_wallets').insert({'address': address, 'chain': chain}).execute()
     return jsonify({'success': res.status_code == 201})
 
 @app.route('/api/wallets/<address>', methods=['DELETE'])
 def delete_wallet(address):
-    res = supabase.table('wallets').delete().eq('address', address).execute()
+    res = supabase.table('tracked_wallets').delete().eq('address', address).execute()
     return jsonify({'success': res.status_code == 200})
 
 if __name__ == '__main__':
