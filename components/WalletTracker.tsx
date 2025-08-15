@@ -37,109 +37,58 @@ export default function WalletTracker() {
       
       // Transform the data to match our interface
       const transformedWallets: TrackedWallet[] = walletData.map((wallet, index) => ({
-        id: index.toString(),
+        id: wallet.address,
         address: wallet.address,
         name: wallet.name || `Wallet ${index + 1}`,
         score: wallet.score,
         balance: wallet.balance,
         lastActivity: wallet.lastActivity,
         chain: wallet.chain,
-        volume: wallet.balance * (Math.random() * 1000 + 500), // Simulate volume based on balance
+        volume: wallet.balance, // Use actual balance for volume
         status: wallet.score > 80 ? 'active' : wallet.score > 60 ? 'inactive' : 'alert',
-        transactions: Math.floor(wallet.score / 10) + Math.floor(Math.random() * 20), // Simulate transaction count
+        transactions: Math.floor(wallet.score / 10), // Use score for transaction count
       }));
-      
-      console.log('WalletTracker: Transformed wallets:', transformedWallets);
       setWallets(transformedWallets);
     } catch (err) {
       console.error('WalletTracker: Failed to load tracked wallets:', err);
       setError('Failed to load tracked wallets. Please try again.');
-      
-      // Fallback to sample data
-      console.log('WalletTracker: Using fallback data...');
-      setWallets([
-        {
-          id: '1',
-          address: '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6',
-          name: 'Whale Wallet #1',
-          score: 95,
-          balance: 12.5,
-          lastActivity: '2 minutes ago',
-          chain: 'Base',
-          volume: 1250.50,
-          status: 'active',
-          transactions: 47,
-        },
-        {
-          id: '2',
-          address: '0x8ba1f109551bD432803012645Hac136c772c3c7c',
-          name: 'Smart Money',
-          score: 87,
-          balance: 8.9,
-          lastActivity: '15 minutes ago',
-          chain: 'Base',
-          volume: 890.25,
-          status: 'active',
-          transactions: 32,
-        }
-      ]);
+      setWallets([]);
     } finally {
-      console.log('WalletTracker: Finished loading, setting loading to false');
       setIsLoading(false);
     }
   };
 
+  // Add wallet with network selection
+  const [selectedNetwork, setSelectedNetwork] = useState<'Base' | 'Ethereum'>('Base');
   const handleAddWallet = async () => {
     if (newWalletAddress.trim()) {
       try {
-        console.log('WalletTracker: Adding new wallet:', newWalletAddress);
-        setError(''); // Clear any previous errors
-        setIsAddingWallet(false); // Close the modal while processing
-        
-        // Use the API to track the new wallet
-        const success = await api.trackWallet(newWalletAddress.trim());
-        
+        setError('');
+        setIsAddingWallet(false);
+        const success = await api.trackWallet(newWalletAddress.trim(), selectedNetwork);
         if (success) {
-          console.log('WalletTracker: Wallet added successfully');
-          // Add the new wallet to the list
-          const newWallet: TrackedWallet = {
-            id: Date.now().toString(),
-            address: newWalletAddress.trim(),
-            name: `Wallet ${wallets.length + 1}`,
-            score: Math.floor(Math.random() * 40) + 60, // Random score 60-100
-            balance: 0,
-            lastActivity: 'Just added',
-            chain: 'Base',
-            volume: 0,
-            status: 'active',
-            transactions: 0,
-          };
-          setWallets([...wallets, newWallet]);
-          setNewWalletAddress('');
-          
-          // Show success message
           setSuccess('Wallet added successfully!');
           setTimeout(() => setSuccess(''), 3000);
-          
-          // Reload wallets to get updated data from server
           setTimeout(loadTrackedWallets, 1000);
         } else {
-          console.log('WalletTracker: Failed to add wallet - API returned false');
           setError('Failed to add wallet. The server could not process the request.');
-          setIsAddingWallet(true); // Reopen modal on error
+          setIsAddingWallet(true);
         }
       } catch (err) {
-        console.error('WalletTracker: Error adding wallet:', err);
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-        setError(`Failed to add wallet: ${errorMessage}`);
-        setIsAddingWallet(true); // Reopen modal on error
+        setError('Failed to add wallet.');
+        setIsAddingWallet(true);
       }
     }
   };
 
-  const removeWallet = (id: string) => {
-    console.log('WalletTracker: Removing wallet:', id);
-    setWallets(wallets.filter(wallet => wallet.id !== id));
+  // Remove wallet using API
+  const removeWallet = async (id: string) => {
+    const success = await api.removeWallet(id);
+    if (success) {
+      setWallets(wallets.filter(wallet => wallet.id !== id));
+    } else {
+      setError('Failed to remove wallet.');
+    }
   };
 
   const getScoreColor = (score: number) => {
@@ -242,7 +191,7 @@ export default function WalletTracker() {
         </div>
       )}
 
-      {/* Add Wallet Modal */}
+      {/* Add Wallet Modal with Network Selection */}
       {isAddingWallet && (
         <div className="card">
           <h3 className="text-lg font-semibold mb-4">Track New Wallet</h3>
@@ -258,6 +207,17 @@ export default function WalletTracker() {
                 placeholder="Enter wallet address (0x...)"
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-secondary-700 mb-2">Network</label>
+              <select
+                value={selectedNetwork}
+                onChange={e => setSelectedNetwork(e.target.value as 'Base' | 'Ethereum')}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <option value="Base">Base</option>
+                <option value="Ethereum">Ethereum</option>
+              </select>
             </div>
             <div className="flex space-x-3">
               <button

@@ -99,46 +99,22 @@ class TradeSeerAPI {
     }
   }
 
-  // Get tracked wallets
+  // Get tracked wallets from Supabase-backed Flask API
   async getTrackedWallets(): Promise<WalletData[]> {
     try {
-      console.log('API: Fetching tracked wallets from:', `${this.baseURL}/wallets`);
-      
-      const response = await fetch(`${this.baseURL}/wallets`);
-      console.log('API: Wallets response status:', response.status);
-      console.log('API: Wallets response ok:', response.ok);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API: Failed to fetch wallets, status:', response.status, 'error:', errorText);
-        throw new Error(`Failed to fetch wallets: HTTP ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log('API: Wallets response data:', data);
-      
-      if (data.status === 'success' && data.wallets) {
-        const wallets = data.wallets.map((wallet: any) => ({
-          address: wallet.address,
-          name: wallet.name || `Wallet ${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`,
-          balance: wallet.balance || 0,
-          score: wallet.score || 0,
-          lastActivity: wallet.lastActivity || '24h ago',
-          chain: wallet.chain || 'Base'
-        }));
-        console.log('API: Processed wallets:', wallets);
-        return wallets;
-      }
-      
-      console.log('API: No wallets found or invalid response format');
-      return [];
+      const response = await fetch(`${this.baseURL}/api/wallets`);
+      if (!response.ok) throw new Error(`Failed to fetch wallets: HTTP ${response.status}`);
+      const wallets = await response.json();
+      return wallets.map((wallet: any) => ({
+        address: wallet.address,
+        name: wallet.name || `Wallet ${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`,
+        balance: wallet.balance || 0,
+        score: wallet.score || 0,
+        lastActivity: wallet.lastActivity || '24h ago',
+        chain: wallet.chain || 'Base'
+      }));
     } catch (error) {
       console.error('API: Failed to get tracked wallets:', error);
-      console.error('API: Error details:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : 'No stack trace',
-        name: error instanceof Error ? error.name : 'Unknown error type'
-      });
       return [];
     }
   }
@@ -221,59 +197,33 @@ class TradeSeerAPI {
     }
   }
 
-  // Track new wallet
-  async trackWallet(address: string): Promise<boolean> {
+  // Track new wallet using Supabase-backed Flask API
+  async trackWallet(address: string, chain: string = 'Base'): Promise<boolean> {
     try {
-      console.log('API: Attempting to track wallet:', address);
-      console.log('API: Base URL:', this.baseURL);
-      
-      const payload = {
-        message: {
-          text: `/track ${address}`,
-          chat: { id: Date.now() },
-          from: { id: Date.now(), username: 'web_user' }
-        }
-      };
-      
-      console.log('API: Request payload:', payload);
-      
-      const response = await fetch(`${this.baseURL}/webhook`, {
+      const response = await fetch(`${this.baseURL}/api/wallets`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address, chain })
       });
-
-      console.log('API: Response status:', response.status);
-      console.log('API: Response ok:', response.ok);
-      console.log('API: Response headers:', Object.fromEntries(response.headers.entries()));
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API: Response not ok, error text:', errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const responseData = await response.text();
-      console.log('API: Response data:', responseData);
-      
-      // Check if the response indicates success
-      if (responseData.includes('"status":"ok"') || responseData.includes('"status":"success"')) {
-        console.log('API: Wallet tracking successful');
-        return true;
-      } else {
-        console.log('API: Wallet tracking response indicates failure');
-        return false;
-      }
-      
+      if (!response.ok) return false;
+      const result = await response.json();
+      return !!result.success;
     } catch (error) {
       console.error('API: Failed to track wallet:', error);
-      console.error('API: Error details:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : 'No stack trace',
-        name: error instanceof Error ? error.name : 'Unknown error type'
+      return false;
+    }
+  }
+  // Remove wallet using Supabase-backed Flask API
+  async removeWallet(address: string): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseURL}/api/wallets/${address}`, {
+        method: 'DELETE'
       });
+      if (!response.ok) return false;
+      const result = await response.json();
+      return !!result.success;
+    } catch (error) {
+      console.error('API: Failed to remove wallet:', error);
       return false;
     }
   }

@@ -957,6 +957,47 @@ app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'])
 logging.basicConfig(level=logging.INFO)
 
+# --- Supabase Setup ---
+from supabase import create_client, Client
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- Supabase Wallet Functions ---
+def add_wallet_to_supabase(address, chain):
+    data = {"address": address, "chain": chain}
+    res = supabase.table("wallets").insert(data).execute()
+    return res.status_code == 201
+
+def get_wallets_from_supabase():
+    res = supabase.table("wallets").select("*").execute()
+    return res.data if res.status_code == 200 else []
+
+def delete_wallet_from_supabase(address):
+    res = supabase.table("wallets").delete().eq("address", address).execute()
+    return res.status_code == 200
+
+# --- Flask API Endpoints for Wallet Tracking ---
+@app.route('/api/wallets', methods=['GET'])
+def api_get_wallets():
+    wallets = get_wallets_from_supabase()
+    return jsonify(wallets)
+
+@app.route('/api/wallets', methods=['POST'])
+def api_add_wallet():
+    data = request.json
+    address = data.get('address')
+    chain = data.get('chain', 'Base')
+    if not address:
+        return jsonify({"error": "Missing address"}), 400
+    success = add_wallet_to_supabase(address, chain)
+    return jsonify({"success": success}), (200 if success else 500)
+
+@app.route('/api/wallets/<address>', methods=['DELETE'])
+def api_delete_wallet(address):
+    success = delete_wallet_from_supabase(address)
+    return jsonify({"success": success}), (200 if success else 500)
+
 class TelegramBot:
     def __init__(self, token):
         self.token = token
